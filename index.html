@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Bribe's vJass2Lua version 0.9</title>
+    </head>
+    <body>
+        <input type="button" id="convert2lua" value="Convert to Lua"/>
+        <input type="button" id="revert2vjass" value="Revert to vJass"/>
+        <input type="button" id="copyscript" value="Copy to Clipboard"/>
+        <br/>
+        <textarea autofocus rows="40" cols="120" id="scriptblock" placeholder="Enter vJass script" wrap="off"></textarea>
+        <br />
+        Configurables:
+        <input type="checkbox" id="deletecomments">Delete comments
+        <input type="checkbox" id="deleteemmy">Delete Emmy Annotation
+        <input type="checkbox" id="deletelinebreaks">Delete extra linebreaks
+        <br />
+        <br />
+        Required Lua for vJass support:
+        <br /><a href="https://www.hiveworkshop.com/threads/vjass2lua-runtime-plugin.339511/">vJass2Lua Runtime Plugin</a>
+        <br /><a href="https://www.hiveworkshop.com/threads/global-initialization.317099/">Global Initialization</a>
+        <br />
+        <br />
+        Alternatively to the above, if this is only a JASS script, you can add this snippet to the top trigger in your map to help in case any string concatenation was missed: 
+        <br /><textarea cols = "70" rows = "1">getmetatable("").__add = function(obj, obj2) return obj .. obj2 end</textarea>
+    </body>
+    <script>
+        var recent = "";
+        const vJassField = document.getElementById("scriptblock");
+        var converted = false; //prevent double-click of Convert2Lua from corrupting the code
+
+        function deleteEmmies(str) {
+            if (document.getElementById("deleteemmy").checked) {
+                return str.replace(/---@.*/g, "");
+            }
+            return str;
+        }
+        document.getElementById('deleteemmy').onchange = () => vJassField.value = deleteEmmies(vJassField.value);
+
+        function delEmmy() {
+            vJassField.value = deleteEmmies(vJassField.value);
+        }
+        function deleteLineBreaks(str) {
+            if (document.getElementById("deletelinebreaks").checked) {
+                return str.replace(/(\r?\n)(?:[ \t]*\r?\n)*/g, "$1");
+            }
+            return str;
+        }
+        document.getElementById('deletelinebreaks').onchange = () => vJassField.value = deleteLineBreaks(vJassField.value);
+
+        document.getElementById('revert2vjass').onclick = function() {
+            var current = document.getElementById('scriptblock').value;
+            if (converted && recent != current && recent != "") {
+                converted = false;
+                document.getElementById('scriptblock').value = recent;
+            }
+        }
+        document.getElementById('copyscript').onclick = function() {
+            var copy = document.getElementById("scriptblock");
+            copy.select();
+            copy.setSelectionRange(0, 99999);
+            navigator.clipboard.writeText(copy.value);
+        }
+        function parseScript() {
+            const vJassSource = vJassField.value;
+            if (converted && (vJassSource.search(/^--Conversion by vJass2Lua/m) >= 0)) {
+                console.log("duplicate conversion detected")
+                return;
+            } else {
+                console.log("conversion commencing")
+                converted = true;
+            }
+            const deleteComments = (document.getElementById("deletecomments").checked);
+            var parsing = vJassSource;
+            const commentArray = [];
+            var commentArrayN = -1;
+            const stringArray = [];
+            var stringArrayN = -1;
+            const rawcodeArray = [];
+            var rawcodeArrayN = -1;
+
+            function insertComment(str) {
+                if (deleteComments) { return ""; }
+                commentArrayN += 1;
+                commentArray[commentArrayN] = str;
+                return '--&cmt;'+commentArrayN;
+            }
+
+            parsing = parsing.replace(/^[ \t]*\/\/\![ \t]*novjass\b.*?^[ \t]*\/\/\![ \t]*\bendnovjass\b/gms, str => insertComment('--[[\n'+str+']]--')); //novjass blocks
+            parsing = parsing.replace(/(?<!^.*\/\/.*)"(.*?)"/gm, (_, str) => {
+                stringArrayN += 1;
+                stringArray[stringArrayN] = str;
+                return '"&str;'+stringArrayN+'"';
+            })
+            parsing = parsing.replace(/'.{4,8}'/g, str => {
+                rawcodeArrayN += 1;
+                rawcodeArray[rawcodeArrayN] = 'FourCC('+str+')';
+                return '"&fcc;'+rawcodeArrayN+'"';
+            }); //Wrap "hfoo" or "Abil" in FourCC
+
+            parsing = parsing.replace(/([^\/])\/\/\!/g, '$1--!'); //preprocessor requests
+            parsing = parsing.replace(/\/\/(.*)/g, (_, str) => insertComment('--'+str)); //line comments
+            parsing = parsing.replace(/\/\*(.*?)\*\/([ \t]*[ \t]*--.*?)*$/gms, (_, a, b) => {
+                if (b == undefined) { b = ""}
+                return insertComment('--[['+a+']]--'+b);
+            }); //convert safe blockquotes (ones that are not breaking /**/ up /**/ text /**/ like /**/ this)
+            parsing = parsing.replace(/\/\*.*?\*\//gms, ''); //delete all unsafe blockquotes
+            parsing = parsing.replace(/^[ \t]*native\b.*/gm, str => insertComment('--'+str)); //comment-out natives
+
+            parsing = parsing.replace(/^([ \t]*)debug[ \t]+(?:(?:set|call)[ \t])*/gm, '$1--'); //convert debug lines to comments
+            parsing = parsing.replace(/^([ \t]*)(?:set|call|constant)[ \t]+/gm, '$1'); //these keywords don't exist in Lua
+            parsing = parsing.replace(/^([ \t]*)static[ \t]+if\b/gm, '$1if'); //static-if is a vJass compile-time optimization, which Lua doesn't have.
+
+            parsing = parsing.replace(/\b(do|in|end|for|nil|break|repeat|until|while)\b/g, '$1_'); //fix Lua keywords that aren't found in JASS.
+            
+            parsing = parsing.replace(/!=/g, '~=');
+            parsing = parsing.replace(/\bnull\b/g, 'nil');
+            parsing = parsing.replace(/\.exists\b/g, ''); //vJass feature is the same as simply evaluating the variable in Lua.
+            parsing = parsing.replace(/'\\?(.)'/g, (_,char) => char.charCodeAt(0)); //convert 'a' into its integer equivalent
+            parsing = parsing.replace(/\"[ \t]*\+/g, '\"..'); //see below
+            parsing = parsing.replace(/\+[ \t]*\"/g, '..\"'); //fix predictable string cocatenation
+
+            parsing = parsing.replace(/\.([\$\w]+)[ \t]*\(/gm, '\:$1\('); //treat all x.method() as x:method() just in case we need to pass x as "self".
+            parsing = parsing.replace(/^([ \t]*)\-\-\![ \t]*runtextmacro[ \t]+(?:optional)*[ \t]*(\w+)[ \t]*\((.*?)\)/gm, '$1vJass.runtextmacro(\"$2\", \{$3\})');
+
+            //Convert vJass dynamic array declarations
+            parsing = parsing.replace(/^([ \t]*)(?:private\.|public\.)*[ \t]*type[ \t]+(\w+)[ \t]+extends[ \t]+(\w+)[ \t]+array[ \t]*\[[ \t]*(\d+)[ \t]*\]/g, "$1local $2 \= Struct\(\);$2\.size \= $4 ---@type $3\[\]");
+            parsing = parsing.replace(/^([ \t]*)interface\b[ \t]+([\$\w]+)(.*?)^[ \t]*endinterface/gm, '$1Struct $2 = vJass\.interface\(true\)\n$1--[[$3$1]]');
+            
+            const replaceArray1 = /^[ \t]*([\$\w]+)[ \t]+array[ \t]+([\$\w]+)(.*)/m;
+            const replaceArray2 = /^[ \t]*\[[ \t]*(\d+)[ \t]*][ \t]*\[[ \t]*(\d+)[ \t]*]/m;
+            const replaceArray3 = /^[ \t]*\[[ \t]*(\d+)[ \t]*]/m;
+            const replaceVar1 = /^[ \t]*\b([\$\w]+)\b[ \t]+\b([\$\w]+)\b(.*)/m
+            const replaceVar2 = /\-\-/
+            const replaceVar3 = /^[ \t]*\=/m
+
+            function parseVar(line) {
+                //check for array declarations, first
+                var newLine = line.replace(replaceArray1, function(_, type, name, remainder) {
+                    type = "---@type "+type
+                    var result = remainder.replace(replaceArray2, (_, width, height) =>
+                        `${name} = vJass.array2D\(${width}, ${height}\) ---@type ${type}\[\]\[\]`
+                    )
+                    if (result == remainder) {
+                        result = remainder.replace(replaceArray3, (_, size) => `${name} = \{size=${size}\}`);
+                        if (result == remainder) {
+                            return name + " = {} " + remainder;
+                        }
+                    }
+                    return result;
+                });
+                if (newLine != line) {
+                    return newLine; //array has been parsed
+                }
+                return line.replace(replaceVar1, function(_, type, name, remainder) {
+                    var hasComment = remainder.search(replaceVar2);
+                    var tail = "";
+                    if (hasComment >= 0) {
+                        tail = remainder.substring(hasComment);
+                        remainder = remainder.substring(0, hasComment);
+                    }
+                    tail = " ---@type " + type + tail;
+                    var isSet = remainder.search(replaceVar3);
+                    if (isSet < 0) {
+                        return name + " = nil " + tail; //simple variable declaration has been parsed
+                    }
+                    return name + remainder + tail; //variable with assignment has been parsed
+                });
+            }
+            parsing = parsing.replace(/^([ \t]*local[ \t]+)(.*)/gm, (_, local, line) => local + parseVar(line));
+
+            //parse scoped functions.
+            parsing = parsing.replace(/^([ \t]*)(private|public)\b[ \t]+function[ \t]*([\$\w]+)(.*?^[ \t]*end)function/gm, function(_, indent, scope, name, body) {
+                body = indent + "local function " +name + body
+                if (scope == "public") {
+                    return body + `\n${indent}_G[SCOPE_PREFIX..'${name}'] = name`;
+                }
+                return body;
+            });
+            parsing = parsing.replace(/^([ \t]*)private[ \t]+keyword\b/gm, '$1local');
+            
+            parsing = parsing.replace(/^([ \t]*)library[ \t]+(\w+)[ \t]*(?:initializer[ \t]*(\w*))?(.*?)endlibrary/gms, (_, indent, name, init, body) => {
+                body = `${indent}do\n${indent}    local SCOPE_PREFIX = "${name}_" ---@type string ${body}`;
+                if (init != undefined) { body += indent + "    OnGlobalInit("+init+")\n"; }
+                return body + "\n"+indent+"end";
+            });
+            parsing = parsing.replace(/^([ \t]*)(private|public)?[ \t]*scope[ \t]+(\w+)[ \t]*(?:initializer[ \t]*(\w*))?(.*?)endscope/gms, (_, indent, scope, name, init, body) => {
+                if (scope != undefined) { name = SCOPE_PREFIX+'.."'+name; } else { name = '"'+name; }
+                body = `${indent}do\n${indent}    local SCOPE_PREFIX = ${name}_" ---@type string ${body}`;
+                if (init != undefined) { body += indent + "    OnTrigInit("+init+")\n"; }
+                return body + "\n"+indent+"end";
+            });
+
+            parsing = parsing.replace(/^([ \t]*)loop\s+exitwhen[ \t]*([^\r\n]*)\-\-/gms, '$1while not \($2\) do \-\-');
+            parsing = parsing.replace(/^([ \t]*)loop\s+exitwhen[ \t]*([^\r\n]*)/gms, '$1while not \($2\) do');
+            parsing = parsing.replace(/^([ \t]*)loop\b((?:(?!\bendloop\b|\bloop\b).)*?)^[ \t]*exitwhen([^\n\r]*)\s*?([ \t]*)endloop/gms, '$1repeat$2$4until$3');
+            parsing = parsing.replace(/^([ \t]*)loop\b/gm, '$1while true do');
+            parsing = parsing.replace(/^([ \t]*)exitwhen\b([^\r\n]*)\-\-/gm, '$1if$2 then break end \-\-');
+            parsing = parsing.replace(/^([ \t]*)exitwhen\b([^\r\n]*)/gm, '$1if$2 then break end');
+            parsing = parsing.replace(/^([ \t]*)if true then break end/gm, '$1break');
+            
+            parsing = parsing.replace(/\$([0-9a-fA-F]+[^\$])/g, "0x$1") //JASS "$hexcode" must be converted to "0xhexcode" to work in Lua.
+
+            parsing = parsing.replace(/^([ \t]*)hook[ \t]+(\w+)[ \t]+(\w*(?:\.\w+)*)/gm, '$1vJass\.hook\("$2"\, $3\)');
+
+            parsing = parsing.replace(/^[ \t]*globals\b(.*?)\bendglobals\b/gms, function(_, globals) {
+                globals = globals.replace(/^([ \t]*)private(?:[ \t]+constant)*\b/gm, '$1local');
+                globals = globals.replace(/^([ \t]*)public[ \t]+constant[ \t]+([\$\w]+)[ \t]+([\$\w]+)([^\n\r]*)/gm, '$1local $2 $3$4\n$1_G\[SCOPE_PREFIX..\"$3\"\] \= $3');
+                globals = globals.replace(/^([ \t]*)public[ \t]+([\$\w]+)[ \t]+([\$\w]+)\b([^\n\r]*)/gm, '$1local $2 $3$4\n$1GlobalRemap\(SCOPE_PREFIX..\"$3\"\, function\(\) return $3 end, function\(val\) $3 = val end\)');
+                globals = globals.replace(/^([ \t]*(?:local[ \t]+)*)(.*)/gm, (_, prefix, remainder) => prefix + parseVar(remainder))
+                return globals;
+            });
+            
+            parsing = parsing.replace(/function[ \t]*([\$\w]+[\.]*[\w\$]*[ \t]*[\)\,])/, "$1");
+
+            //parse textmacros
+            const macroHasArgs = /^[ \t]takes[ \t]*(.*)/m;
+            const getFirstLine = /\r?\n/;
+            const macroWrapArgs = /\b\w+\b/g;
+            parsing = parsing.replace(/^([ \t]*)\-\-\![ \t]*textmacro[ \t]+(\w+)(.*?)^[ \t]*\-\-\![ \t]*endtextmacro/gms, function(_, indent, name, body) {
+                var statements = body.replace(macroHasArgs, "$1");
+                if (statements != body) {
+                    var linebreak = statements.search(getFirstLine);
+                    body = statements;
+                    statements = statements.substring(0, linebreak);
+                    body = body.substring(linebreak);
+                    statements = statements.replace(macroWrapArgs, function(arg) { return '\"'+arg+'\"'; });
+                    return indent + 'vJass.textmacro(\"'+name+'\", {'+statements+'}, [['+body+indent+']])';
+                }
+                return indent + `vJass.textmacro("${name}", nil, function(thistype)${body}${indent}end)`;
+            });
+
+            //parse structs and modules similarly
+            
+            const isStructMember = /^([ \t]*)(static|readonly|public|private|method)[ \t]+(.*)/gm
+            parsing = parsing.replace(/^([ \t]*)(private|public)*[ \t]*(struct|module)[ \t]*([$\w]+)[ \t]*(.*?^[ \t]*end)(?:struct|module)/gms, function(_, indent, scope, strOrMod, name, body) {
+                var linebreak = body.search(getFirstLine);
+                var head = body.substring(0, linebreak);
+                body = body.substring(linebreak);
+
+                const isModule = (strOrMod == "module");
+
+                //parse all easily-detectable variable and method declarations
+                body = body.replace(isStructMember, function(_, indent, scope, line) {
+                    if (scope != "static") {
+                        line = line.replace(/^([ \t]*)static[ \t]*(?:constant[ \t]+)*/m, '$1') //remove any case of "static" and "constant".
+                    }
+                    var isMethod;
+                    if (! isModule || scope != "private") {
+                        isMethod = scope == "method"
+                        scope = "thistype"; //only keep "private" for modules so the table knows to point to the module rather than to the implementing struct.
+                    }
+                    var operator;
+                    if (isMethod || line.substring(0,6) == "method") {
+                        line = line.replace(/^(?:method)*[ \t]*\b([\$\w]+)\b/m, function(_, name) {
+                            if (name != "operator") {
+                                return "function "+scope+":"+name;
+                            } else {
+                                operator = true;
+                                return "";
+                            }
+                        });
+                        if (operator) {
+                            line = line.replace(/^[ \t]*(?:(\[[ \t]*\])|([\$\w]+))[ \t]*([=]*)[ \t]*(.*)/m, function(_, bracket, word, setter, remainder) {
+                                if (bracket != undefined) {
+                                    if (setter != "") {
+                                        return "function thistype:_setindex("+remainder.replace(/takes[ \t]+[\$\w]+[ \t]+([\$\w]+)[ \t]*,[ \t]*[\$\w]+[ \t]*([\$\w]+\b|\$).*/, "$1, $2)");
+                                    } else {
+                                        return "function thistype:_getindex("+remainder.replace(/takes[ \t]+[\$\w]+[ \t]+([\$\w]+\b|\$).*/, '$1)');
+                                    }
+                                } else {
+                                    if (setter != "") {
+                                        return 'function thistype:_operatorset("'+word+'", '+remainder.replace(/takes[ \t]+[\$\w]+[ \t]+([\$\w]+\b|\$).*/, 'function(self, $1)');
+                                    } else {
+                                        return 'function thistype:_operatorget("'+word+'", function(self)';
+                                    }
+                                }
+                            });
+                        }
+                        line += "\n"+indent+"    local _ENV = Struct.environment(self)"
+                    } else {
+                        line = scope+'.'+parseVar(line);
+                    }
+                    return indent + line;
+                });
+
+                body = body.replace(/^([ \t]*function thistype:_operator.*?^[ \t]*end)method/gms, "$1)");
+                body = body.replace(/^([ \t]*end)method/gm, "$1");
+
+                if (isModule) {
+                    if (scope == undefined) {scope = ""}
+                    head = `vJass.module("${name}", "${scope}", SCOPE_PREFIX, function(private, thistype)\n${indent}    local _ENV = Struct.environment(private)` + head;
+                    body = body + ")";
+                } else {
+                    head = name+" = Struct() --" + head;
+                    head = head.replace(/\(\) --[ \t]*extends[ \t]+([$\w]+)/, (_, extended) => {
+                        if (extended == "array") { return "()"; }
+                        return `(${extended}) --`
+                    });
+                    if (scope) {
+                        head = "local " + head;
+                        if (scope == "public") {
+                            head += "\n"+indent + '_G[SCOPE_PREFIX.."'+name+'"] = '+name;
+                        }
+                    }
+                }
+                body = body.replace(/\bthis\b/g, 'self'); //implied 'this' in vJass doesn't work outside of structs, so we only need this replacer within a struct/module.
+                body = body.replace(/([^\w\d\]\)])\.([A-Za-z])/gm, '$1self\.$2'); //dot-syntax doesn't work in Lua without something before the dot.
+                body = body.replace(/^([ \t]*)implement[ \t]+([\$\w]+)/gm, '$1vJass.implement\(\"$2\", SCOPE_PREFIX, thistype\)');
+                body = body.replace(/^([ \t]*)(public|private)[ \t]*static(?:[ \t]*constant)*[ \t]+/gm, function(_, indent, scope) {
+                    if (scope == "") { scope == "thistype"; }
+                    return indent+ scope+".";
+                });
+                if (! isModule) { body = "do\n"+indent+"    local thistype = "+name+"\n"+indent+"    local _ENV = Struct.environment(thistype)" + body; }
+                return indent + head + "\n" + indent + body;
+            });
+
+            parsing = parsing.replace(/^([ \t]*end)(?:loop|if|function)/gm, '$1')
+
+            parsing = parsing.replace(/^([ \t]*)(?:public|private)*[ \t]*function interface/gm, "$1---@class")
+
+            //parse function arguments
+            const isNothing = /\bnothing\b/m;
+            const getArgPairs = /([\$\w]+)[ \t]+([\$\w]+)/g;
+            parsing = parsing.replace(/^([ \t]*)(.+)[ \t]+takes[ \t]+(.*)[ \t]+returns[ \t]+([\$\w]+)/gm, function(_, indent, func, params, rtype) {
+                var paramEmmy = "";
+                var returnEmmy = "";
+                var argsResult = "";
+                if (rtype != "nothing") {
+                    returnEmmy = indent + "---\@return " + rtype + "\n";
+                }
+                if (! params.match(isNothing)) {
+                    argsResult = params.replace(getArgPairs, function(_, type, name) {
+                        paramEmmy += indent + "---\@param " + name + " " + type + "\n";
+                        return name;
+                    })
+                }
+                return paramEmmy + returnEmmy + indent + func + "(" + argsResult + ")";
+            });
+            parsing = deleteEmmies(parsing);
+
+            if (commentArrayN >= 0) {
+                parsing = parsing.replace(/--\&cmt\;(\d+)/g, (_, num) => commentArray[num]);
+                parsing = parsing.replace(/--\&cmt\;(\d+)/g, (_, num) => commentArray[num]); //do it again as blockquotes might have had packed comments
+            }
+            if (stringArrayN >= 0) {
+                parsing = parsing.replace(/"\&str\;(\d+)"/g, (_, num) => '"'+stringArray[num]+'"');
+            }
+            if (rawcodeArrayN >= 0) {
+                parsing = parsing.replace(/"\&fcc\;(\d+)"/g, (_, num) => rawcodeArray[num]);
+            }
+            parsing = deleteLineBreaks(parsing);
+
+            recent = vJassSource;
+            parsing += "\n--Conversion by vJass2Lua v0.9.0.0";
+            vJassField.value = parsing
+            navigator.clipboard.writeText(parsing);
+        }
+        vJassField.addEventListener('paste', function(e) { //solution from https://stackoverflow.com/a/6804718/18919165
+            var clipboardData, pastedData;
+            e.stopPropagation();
+            e.preventDefault();
+
+            clipboardData = e.clipboardData || window.clipboardData;
+
+            vJassField.value = clipboardData.getData('Text');
+            parseScript();
+        });
+        document.getElementById('convert2lua').onclick = parseScript;
+    </script>
+</html>
