@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Bribe's vJass2Lua version 0.9</title>
+        <title>Bribe's vJass2Lua</title>
     </head>
     <body>
         <input type="button" id="convert2lua" value="Convert to Lua"/>
@@ -17,9 +17,11 @@
         <br />
         <br />
         Required Lua for vJass support:
-        <br /><a href="https://www.hiveworkshop.com/threads/vjass2lua-runtime-plugin.339511/">vJass2Lua Runtime Plugin</a>
-        <br /><a href="https://www.hiveworkshop.com/threads/global-initialization.317099/">Global Initialization</a>
+        <br /><a href="https://github.com/BribeFromTheHive/Lua-Core/blob/main/vJass2Lua%20Runtime%20Plugin.lua">vJass2Lua Runtime Plugin (for Structs, Textmacros, etc.)</a>
+        <br /><a href="https://www.hiveworkshop.com/threads/global-initialization.317099/">Global Initialization (for scope/library/struct initialization)</a>
         <br />
+        Optional Requirements:
+        <br /><a href="https://github.com/BribeFromTheHive/Lua-Core/blob/main/Global%20Variable%20Remapper.lua">Global Variable Remapper (for public non-constant vJass variables)</a>
         <br />
         Alternatively to the above, if this is only a JASS script, you can add this snippet to the top trigger in your map to help in case any string concatenation was missed: 
         <br /><textarea cols = "70" rows = "1">getmetatable("").__add = function(obj, obj2) return obj .. obj2 end</textarea>
@@ -121,7 +123,7 @@
             parsing = parsing.replace(/\+[ \t]*\"/g, '..\"'); //fix predictable string cocatenation
 
             parsing = parsing.replace(/\.([\$\w]+)[ \t]*\(/gm, '\:$1\('); //treat all x.method() as x:method() just in case we need to pass x as "self".
-            parsing = parsing.replace(/^([ \t]*)\-\-\![ \t]*runtextmacro[ \t]+(?:optional)*[ \t]*(\w+)[ \t]*\((.*?)\)/gm, '$1vJass.runtextmacro(\"$2\", \{$3\})');
+            parsing = parsing.replace(/^([ \t]*)\-\-\![ \t]*runtextmacro[ \t]+(?:optional)*[ \t]*(\w+)[ \t]*\((.*?)\)/gm, '$1vJass.runtextmacro(\"$2\", $3)');
 
             //Convert vJass dynamic array declarations
             parsing = parsing.replace(/^([ \t]*)(?:private\.|public\.)*[ \t]*type[ \t]+(\w+)[ \t]+extends[ \t]+(\w+)[ \t]+array[ \t]*\[[ \t]*(\d+)[ \t]*\]/g, "$1local $2 \= Struct\(\);$2\.size \= $4 ---@type $3\[\]");
@@ -170,7 +172,7 @@
             parsing = parsing.replace(/^([ \t]*local[ \t]+)(.*)/gm, (_, local, line) => local + parseVar(line));
 
             //parse scoped functions.
-            parsing = parsing.replace(/^([ \t]*)(private|public)\b[ \t]+function[ \t]*([\$\w]+)(.*?^[ \t]*end)function/gm, function(_, indent, scope, name, body) {
+            parsing = parsing.replace(/^([ \t]*)(private|public)\b[ \t]+function[ \t]*([\$\w]+)(.*?^[ \t]*end)function/gms, function(_, indent, scope, name, body) {
                 body = indent + "local function " +name + body
                 if (scope == "public") {
                     return body + `\n${indent}_G[SCOPE_PREFIX..'${name}'] = name`;
@@ -352,7 +354,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.9.0.0";
+            parsing += "\n--Conversion by vJass2Lua v0.9.0.1";
             vJassField.value = parsing
             navigator.clipboard.writeText(parsing);
         }
