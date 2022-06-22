@@ -10,6 +10,7 @@
         <br/>
         <textarea autofocus rows="40" cols="120" id="scriptblock" placeholder="Enter vJass script" wrap="off"></textarea>
         <br />
+        <div style="font-family: roboto,verdana,arial;font-size: 14px;">
         Configurables:
         <input type="checkbox" id="deletecomments">Delete comments
         <input type="checkbox" id="deleteemmy">Delete Emmy Annotation
@@ -20,10 +21,13 @@
         <br /><a href="https://github.com/BribeFromTheHive/Lua-Core/blob/main/vJass2Lua%20Runtime%20Plugin.lua">vJass2Lua Runtime Plugin (for Structs, Textmacros, etc.)</a>
         <br /><a href="https://www.hiveworkshop.com/threads/global-initialization.317099/">Global Initialization (for scope/library/struct initialization)</a>
         <br />
+        <br />
         Optional Requirements:
         <br /><a href="https://github.com/BribeFromTheHive/Lua-Core/blob/main/Global%20Variable%20Remapper.lua">Global Variable Remapper (for public non-constant vJass variables)</a>
         <br />
+        <br />
         Alternatively to the above, if this is only a JASS script, you can add this snippet to the top trigger in your map to help in case any string concatenation was missed: 
+        </div>
         <br /><textarea cols = "70" rows = "1">getmetatable("").__add = function(obj, obj2) return obj .. obj2 end</textarea>
     </body>
     <script>
