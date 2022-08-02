@@ -7,7 +7,7 @@
         <input type="button" id="convert2lua" value="Convert to Lua"/>
         <input type="checkbox" id="autoConvert" checked>Convert on paste
         <input type="button" id="copyscript" value="Copy to Clipboard"/>
-        <input type="checkbox" id="autoCopy" >Copy on convert
+        <input type="checkbox" id="autoCopy" checked>Copy on convert
         <input type="button" id="revert2vjass" value="Revert to vJass"/>
         <br/>
         <textarea autofocus rows="40" cols="120" id="scriptblock" placeholder="Enter vJass script" wrap="off"></textarea>
@@ -120,15 +120,14 @@
         let lastRawResult = "";
         function buildvJassVarFinder(whichWord, capture=true)
         {
-            let boundary = "\\$?\\b";
-            let result = boundary + whichWord + boundary;
+            let result = "\\$?\\b" + whichWord + "\\b\\$?";
             if (capture) {
                 lastRawResult = result;
                 result = "("+result+")";
             }
             return result;
         }
-        const rawvJassVar = "[A-Za-z_][\\w]*";
+        const rawvJassVar = "[A-Za-z][\\w]*";
         const capturevJassVar = buildvJassVarFinder(rawvJassVar); //captures a vJass variable name to a group.
         const seekvJassVar = lastRawResult;  //finds a vJass variable name (must start with a letter, underscore or $ symbol).
         const seekIndent = "^ *";
@@ -152,7 +151,6 @@
         const seekComment   = /•/;
         const seekLineBreak = "\\r?\\n";
         const seekLineBreakR= new RegExp(seekLineBreak);
-        const replaceVar3   = /^ *\=/m;
 
         function ReplaceStr(str, regexPattern, replacement)
         {
@@ -161,6 +159,17 @@
             str = str.replace(regexPattern, replacement);
             
             //logDiff(original,str);
+            return str;
+        }
+
+        function RepeatActionOnString(str, action)
+        {
+            let tempStr = "";
+            while (tempStr != str)
+            {
+                tempStr = str;
+                str = action(str);
+            }
             return str;
         }
 
@@ -215,7 +224,7 @@
                 if (type == "integer") addToIntStack(name);
 
                 tail = " ---@type " + type + " " + tail;
-                let isSet = remainder.search(replaceVar3);
+                let isSet = remainder.search(/^ *\=/m);
                 if (isSet < 0) {
                     if (isLocal)
                         return name + tail; //local variable declaration does not need assignment.
@@ -297,7 +306,7 @@
         const zincVarFinder = [];
         function createZincVarFinder(findArray=false, deepSearch=false)
         {
-            let w1 = "(?:"+zincVarPrefix+")*\\$?("+rawvJassVar+"\\b\\$?)";
+            let w1 = "(?:"+zincVarPrefix+")*(\\$?"+rawvJassVar+"\\b\\$?)";
             if (findArray)
                 findArray = "\\s*(\\[[^\\[\\]]*?\\])";
             else
@@ -314,11 +323,11 @@
                 w1 += /*"*\\$?("+rawvJassVar+"\\b\\$?)*/"(\\s+)()";
             }
             open += w1+capturevJassVar; //pattern is set to capture two vJass variables (the first is assumed to be a type, but I will check against it later to make sure it's not a keyword).
-            let close = "([^;,\\(]*?(?:\\([^\\(\\)]*(?:\\([^\\(\\)]*\\))*[^\\(\\)]*\\))*)\\s*([;,\\{\\}])( *•.*)*"; //pattern set to find a semicolon or comma, skips up to 2 levels of parenthesis (if present), then includes the remainder of the line.
+            let close = "([^;,(•]*?(?:\\([^()]*(?:\\([^()]*\\))*(?:[^()]*\\([^()]*\\))*[^()]*\\))*)\\s*([;,\\{\\}])( *•.*)*"; //pattern set to find a semicolon or comma, skips up to 2 levels of parenthesis (if present), then includes the remainder of the line.
             
             let result = new RegExp(open + findArray + close, flag);
             
-            //console.log("Zinc variable finder: ", result);
+            console.log("Zinc variable finder: ", result);
             
             return result;
         }
@@ -478,18 +487,20 @@
                     result = w1 + gap + w2;
                     //console.log("non-array found");
                 }
-                
+                result += remainder;
                 let test = parseVar(result);
                 if (test == result) {
-                    //console.log("failure:",wholeMatch);
+                    console.log("failure:",wholeMatch);
                     return wholeMatch;
                 }
                 //console.log("success:",result,w1,w2,wholeMatch);
                 //console.log("new var:", prefix+result, "indent:",indent.length);
 
-                result = indent+prefix+result+remainder;
+                if (prefix == "") result = test;
 
-                if (isDeep) console.log(result+tail);
+                result = indent+prefix+result;
+
+                //if (isDeep) console.log(result+tail);
 
                 return insertZincVar(result)+tail;
             }
@@ -516,7 +527,7 @@
 
                 if (str.search(new RegExp(zincVarPrefix)) >= 0)
                 {
-                    console.log("deep search:", str);
+                    //console.log("deep search:", str);
                     //need to go deeper. Comments were sandwiched in between variable types and chained, breaking the flow.
                     //Issue discovered in: https://www.hiveworkshop.com/threads/cam-system-v3.144480/
 
@@ -538,12 +549,12 @@
                 const zincBracket = /(?:((\b(?:function|method|operator)\b\s*([\w$]+)?)([\[\]\=\s]*)\(([\w$\s,]*?)\)\s*(?:\-\>\s*([\w$]+))?)|(\b(if|else|elseif|while)\b(\s*)(\((?:(?!then)[^{;])*?\))?))(\s*){(\s*)([^{}]*?)(\s*)}(?:(\s*)(else(?:if)?))?/gms;
                 //                       [       $2                                   ][    $4     ]  [    $5    ]               [  $6  ]       [         $8         ]  [ $9][        $10           ]    [$11] [$12][  $13  ][$14]    [$15][    $16    ]
                 //                                                           [  $3  ]
-                // corresponding information defined in the zincSource.replace command which uses this regular expression.
+                // corresponding information defined in the replacer function which uses this regular expression.
 
                 const zincNoArgs = /^\s*$/m;
                 const zincIsFunc = /^(method|function|operator).*/ms;
 
-                zincSource = ReplaceStr(zincSource, /\bconstant\s+/g, "")
+                zincSource = ReplaceStr(zincSource, /\bconstant\s+/g, "");
 
                 zincSource = ReplaceStr(zincSource,/(.?)(\&\&|\|\||\!)(.?)/g,
                 (_, startp=" ", str, endp=" ") =>
@@ -668,15 +679,23 @@
                             }
                             if (isValidFunc == "function") {
                                 endpadding1 += "endfunction";
+                                if (functionName == "onInit")
+                                    endpadding1 += "; OnGlobalInit(onInit)";
                             } else {
                                 endpadding1 += "endmethod";
                             }
+                            console.log(args);
+                            args = ReplaceStr(args,replaceLineBreak, " ");
+                            args = ReplaceStr(args, /  +/g, " ")
                             args = ReplaceStr(args,zincNoArgs, "nothing");
                             args = " takes " + args;
                             args += " returns " + returnType;
+                            console.log(args);
 
                             contents = ReplaceStr(startpadding2+contents,/\belse\s*while\b[^\{\}]*?endwhile(?!\s+endif)/gm, "$& endif");
                             contents = parseZincVars(contents,"local ");
+                            contents = ReplaceStr(contents, /\bstatic\s+method\s+/, "function"); //convert static method to the "function" keyword used by vJass
+
                             return insertZincFunc(functionOrSomethin + operatorSymbols + args + startpadding1 + contents + endpadding1);
                         } else {
                             //console.log("is not function:", isNotFunction);
@@ -729,34 +748,75 @@
                 }
                 //Extract Zinc structs and handle the struct and library scopes separately.
                 //console.log("zinc contents:",zincSource);
+
+                const zincFindPubPrivBrackets = /\b(public|private)\s*\{([^\{\}]*)\}/g;
+
                 zincSource = ReplaceStr(zincSource,/(struct[\s\w\$\[\]]*?)\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/g, (_,declaration, contents) =>
                 {
                     //console.log("struct contents:",contents);
-                    contents = ReplaceStr(contents,/\b(public|private)\s*\{([^\{\}]*)\}/g, (_,a,b) => {
+                    contents = ReplaceStr(contents,zincFindPubPrivBrackets, (_,a,b) => {
                         //console.log("getting rid of public/private:",b);
                         b = parseZincVars(b,a+" ");
-                        //TODO: also add prefix to methods.
                         return b;
                     });
                     declaration = ReplaceStr(declaration,/\[[^\[\]]\]/, " extends array ");
                     
                     contents = ReplaceStr(contents, /\b(?:optional\s+)*module\b/g, "implement");
 
+                    contents = RepeatActionOnString(contents, unpackZincFunc);
+
                     return insertZincStruct(declaration + contents + "endstruct");
                 });
 
+                function zincAddPrefix(prefix, str)
+                {
+                    str = ReplaceStr(str, /•#(?:fun|zst)/g, match => prefix + match);
+                    return str;
+                }
+
+                function zincProcessPublic(str)
+                {
+                    str = parseZincVars(str,"");
+                    return insertZincPublic(str);
+                }
+
+                //process public/private brackets outside of structs
+                zincSource = ReplaceStr(zincSource, zincFindPubPrivBrackets, (_,a,b) =>
+                {
+                    if (a == "public")
+                        b = zincProcessPublic(b);
+                    return b;
+                });
+                //process single-declaration public function/struct
+                zincSource = ReplaceStr(zincSource, /\bpublic\b\s+(•.+)/g, (_,line) => zincProcessPublic(line));
+
+                //process single-declaration public variable
+                zincSource = ReplaceStr(zincSource, /\bpublic\b\s+([^\s][^;]+;)/g, (_,line) => zincProcessPublic(line));
+
+                zincSource = ReplaceStr(zincSource, /\bprivate\s+/g, ""); //get rid of private keywords added unnecessarily by the user.
+
+                zincSource = zincAddPrefix("private ",zincSource);
+
+                console.log(zincSource);
+                
                 zincSource = parseZincVars(zincSource,"local ");
+                
+                zincSource = ReplaceStr(zincSource, /type/g, "private $&");
+
+                console.log(zincSource);
+
+                zincSource = unpackZincPublic(zincSource);
 
                 zincSource = unpackZincStruct(zincSource);
 
-                zincSource = unpackZincFunc(zincSource);
-
-                zincSource = ReplaceStr(zincSource, /^( *)(struct|function)/gm, "$1private $2");
+                zincSource = RepeatActionOnString(zincSource, unpackZincFunc);
 
                 zincSource = ReplaceStr(zincSource, /\b(local *)*public /g, "");
 
                 zincSource = ReplaceStr(zincSource,/^(( *)[\w][^\r\n;]*)(\bwhile\b[^\{\}]*?)endwhile *([^ •\d\#]*)/gm, (_, whatever, spacing="", block, trail="") =>
                 {
+                    //trippy parsing hack to resolve issue encountered with RetroFade
+                    
                     block = ReplaceStr(block,/\n(?=.*\n)/g, "\n"+indentation);
                     trail = "\n"+spacing+trail;
                     return whatever+"\n"+spacing+indentation+block+indentation+"endwhile"+trail;
@@ -1057,6 +1117,32 @@
                 return ReplaceStr(line, replaceDiv, (_, a, b) => a+"//"+b);
             }
 
+            parsing = ReplaceStr(parsing, /^( *)(?:(private|public) +)?type +([\w\$]+) +extends(.*)/gm, (matchFailed,indent, scope, word, remainder)=>
+            {
+                if (remainder.search(/\bfunction\b/)>=0) {
+                    return "---@class "+word; //function interface. Just declare it for Emmy annotation.
+                }
+                let size;
+                remainder = ReplaceStr(remainder, /^[^\[]*\[ *([^,\] ]+)[^•\r\n]*(.*)/m, (_,num, ending) => {
+                    size = num;
+                    return ending; //extract any comments the user may have included on the same line.
+                });
+                if (size != undefined)
+                {
+                    if (remainder == undefined) remainder = "";
+
+                    if (scope != undefined)
+                    {
+                        if (scope == "public")
+                            remainder = "; _G[SCOPE_PREFIX.."+ word +"] = " + word;
+                        
+                        indent += "local ";
+                    }
+                    return indent+word + " = vJass.dynamicArray("+size+")"+remainder;
+                }
+                return "--PARSER ERROR WITH: "+matchFailed
+            });
+
             tempParsing = "";
             while (tempParsing != parsing)
             {
@@ -1111,7 +1197,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.A.0.0";
+            parsing += "\n--Conversion by vJass2Lua v0.A.1.0";
             vJassField.value = parsing
             if (document.getElementById("autoCopy").checked)
             {
