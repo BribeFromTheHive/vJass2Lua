@@ -327,7 +327,7 @@
             
             let result = new RegExp(open + findArray + close, flag);
             
-            console.log("Zinc variable finder: ", result);
+            //console.log("Zinc variable finder: ", result);
             
             return result;
         }
@@ -472,7 +472,7 @@
                     tailgap = gap.substring(spacebreaker) + tailgap;
                     
                     gap = gap.substring(0,spacebreaker) || " ";
-                    console.log("gap found:", w1 + gap + w2);
+                    //console.log("gap found:", w1 + gap + w2);
                 }
                 tail += tailgap;
                 if (sign == ",")
@@ -684,13 +684,13 @@
                             } else {
                                 endpadding1 += "endmethod";
                             }
-                            console.log(args);
+                            //console.log(args);
                             args = ReplaceStr(args,replaceLineBreak, " ");
                             args = ReplaceStr(args, /  +/g, " ")
                             args = ReplaceStr(args,zincNoArgs, "nothing");
                             args = " takes " + args;
                             args += " returns " + returnType;
-                            console.log(args);
+                            //console.log(args);
 
                             contents = ReplaceStr(startpadding2+contents,/\belse\s*while\b[^\{\}]*?endwhile(?!\s+endif)/gm, "$& endif");
                             contents = parseZincVars(contents,"local ");
@@ -751,22 +751,33 @@
 
                 const zincFindPubPrivBrackets = /\b(public|private)\s*\{([^\{\}]*)\}/g;
 
-                zincSource = ReplaceStr(zincSource,/(struct[\s\w\$\[\]]*?)\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/g, (_,declaration, contents) =>
+                function ProcessStructOrModule(header, str)
                 {
-                    //console.log("struct contents:",contents);
-                    contents = ReplaceStr(contents,zincFindPubPrivBrackets, (_,a,b) => {
+                    str = ReplaceStr(str,zincFindPubPrivBrackets, (_,a,b) => {
                         //console.log("getting rid of public/private:",b);
                         b = parseZincVars(b,a+" ");
                         return b;
                     });
+                    
+                    str = ReplaceStr(str, /\b(?:optional\s+)*module\b/g, "implement");
+                    
+                    str = RepeatActionOnString(str, unpackZincFunc);
+                    
+                    return insertZincStruct(header + str + "endstruct");
+                }
+                
+                zincSource = ReplaceStr(zincSource,/(struct[\s\w\$\[\]]*?)\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/g, (_,declaration, contents) =>
+                {
                     declaration = ReplaceStr(declaration,/\[[^\[\]]\]/, " extends array ");
                     
-                    contents = ReplaceStr(contents, /\b(?:optional\s+)*module\b/g, "implement");
-
-                    contents = RepeatActionOnString(contents, unpackZincFunc);
-
-                    return insertZincStruct(declaration + contents + "endstruct");
+                    //console.log("struct contents:",contents);
+                    return ProcessStructOrModule(declaration, contents);
                 });
+
+                zincSource = ReplaceStr(zincSource,/\bmodule\s+([\w$]+)\s*\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/g,(_,name, contents)=>
+                {
+                    return ProcessStructOrModule("module "+name+"\n",contents);
+                })
 
                 function zincAddPrefix(prefix, str)
                 {
@@ -797,13 +808,13 @@
 
                 zincSource = zincAddPrefix("private ",zincSource);
 
-                console.log(zincSource);
+                //console.log(zincSource);
                 
                 zincSource = parseZincVars(zincSource,"local ");
                 
                 zincSource = ReplaceStr(zincSource, /type/g, "private $&");
 
-                console.log(zincSource);
+                //console.log(zincSource);
 
                 zincSource = unpackZincPublic(zincSource);
 
@@ -825,8 +836,10 @@
                 zincSource = ReplaceStr(zincSource,/^( *)\; */gm,"$1 "); //delete all leading semicolons.
                 zincSource = ReplaceStr(zincSource,/end(?:if|while|)/g, "end");
                 
-                zincSource = ReplaceStr(zincSource,/\b(library\b.*?)\{([^\{\}]*)\}/gs, (_,a,b) => {
-                    //console.log(a);
+                console.log("about to parse library:",zincSource);
+
+                zincSource = ReplaceStr(zincSource,/\b(library\b[^\{]*?)\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/gs, (_,a,b) => {
+                    console.log("parsing library: ",a);
                     a = ReplaceStr(a, replaceLineBreak, " ");
                     return a+b+"\nendlibrary";
                 });
@@ -1197,7 +1210,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.A.1.0";
+            parsing += "\n--Conversion by vJass2Lua v0.A.1.1";
             vJassField.value = parsing
             if (document.getElementById("autoCopy").checked)
             {
