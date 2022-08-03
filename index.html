@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Bribe's vJass2Lua</title>
+        <title>Bribe's vJass2Lua version 0.A.1.2</title>
     </head>
     <body>
         <input type="button" id="convert2lua" value="Convert to Lua"/>
@@ -852,7 +852,7 @@
             
             parsing = unpackZinc(parsing);
 
-            parsing = ReplaceStr(parsing,/^( *)debug +(?:(?:set|call) )*/gm, '$1--'); //convert debug lines to comments
+            parsing = ReplaceStr(parsing,/^( *)debug +(?:(?:set|call) )?/gm, '$1--'); //convert debug lines to comments
             parsing = ReplaceStr(parsing,/^( *)(?:set|call|constant) +/gm, '$1');      //these keywords don't exist in Lua
             parsing = ReplaceStr(parsing,/^( *end)if/gm, '$1');
             parsing = ReplaceStr(parsing,/^( *)static +if\b/gm, '$1if');               //static-if is a vJass compile-time optimization, which Lua doesn't have.
@@ -881,7 +881,7 @@
             parsing = ReplaceStr(parsing,/^( *local +)(.*)/gm, (_, local, line) => local + parseVar(line, true));
 
             //parse scoped functions.
-            parsing = ReplaceStr(parsing,/^( *)(private|public)\b +function *([\$\w]+)(.*?^ *endfunction)/gms,
+            parsing = ReplaceStr(parsing,/^( *)(private|public)(?: +constant)?\b +function *([\$\w]+)(.*?^ *endfunction)/gms,
             (_, indent, scope, name, body) =>
             {
                 body = indent + "local function " +name + body
@@ -980,8 +980,6 @@
                 )
                 return globals;
             });
-            
-            parsing = ReplaceStr(parsing,/function *([\$\w]+[\.]*[\w\$]* *[\)\,])/, "$1");
 /*
             .___________. _______ ___   ___ .___________..___  ___.      ___        ______ .______        ______   
             |           ||   ____|\  \ /  / |           ||   \/   |     /   \      /      ||   _  \      /  __  \  
@@ -1110,13 +1108,7 @@
             });
 
             parsing = ReplaceStr(parsing,/^( *)(?:public|private)* *function interface/gm, "$1---@class")
-/*           _______  __    __  .__   __.   ______ .___________. __    ______   .__   __.      _______.
-            |   ____||  |  |  | |  \ |  |  /      ||           ||  |  /  __  \  |  \ |  |     /       |
-            |  |__   |  |  |  | |   \|  | |  ,----'`---|  |----`|  | |  |  |  | |   \|  |    |   (----`
-            |   __|  |  |  |  | |  . `  | |  |         |  |     |  | |  |  |  | |  . `  |     \   \    
-            |  |     |  `--'  | |  |\   | |  `----.    |  |     |  | |  `--'  | |  |\   | .----)   |   
-            |__|      \______/  |__| \__|  \______|    |__|     |__|  \______/  |__| \__| |_______/    ##Functions##
-*/
+
             const isNothing = /\bnothing\b/;
             const getArgPairs = new RegExp(capturevJassVar+" +" +capturevJassVar,"g");
             
@@ -1156,6 +1148,14 @@
                 return "--PARSER ERROR WITH: "+matchFailed
             });
 
+/*           _______  __    __  .__   __.   ______ .___________. __    ______   .__   __.      _______.
+            |   ____||  |  |  | |  \ |  |  /      ||           ||  |  /  __  \  |  \ |  |     /       |
+            |  |__   |  |  |  | |   \|  | |  ,----'`---|  |----`|  | |  |  |  | |   \|  |    |   (----`
+            |   __|  |  |  |  | |  . `  | |  |         |  |     |  | |  |  |  | |  . `  |     \   \    
+            |  |     |  `--'  | |  |\   | |  `----.    |  |     |  | |  `--'  | |  |\   | .----)   |   
+            |__|      \______/  |__| \__|  \______|    |__|     |__|  \______/  |__| \__| |_______/    ##Functions##
+*/
+
             tempParsing = "";
             while (tempParsing != parsing)
             {
@@ -1177,6 +1177,9 @@
                             contents = ReplaceStr(contents, findReturn, returnLine => DoFloorInt(returnLine));
                         }
                     }
+
+                    contents = ReplaceStr(contents,/function *([\$\w]+(?:\.[\w\$]+)? *[\)\,])/g, "$1");
+
                     contents = ReplaceStr(contents, findSetter, (setterLine, varName) =>
                     {
                         if (isVarInt(varName))
@@ -1210,7 +1213,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.A.1.1";
+            parsing += "\n--Conversion by vJass2Lua v0.A.1.2";
             vJassField.value = parsing
             if (document.getElementById("autoCopy").checked)
             {
