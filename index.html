@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Bribe's vJass2Lua version 0.A.1.2</title>
+        <title>Bribe's vJass2Lua version 0.A.1.3</title>
     </head>
     <body>
         <input type="button" id="convert2lua" value="Convert to Lua"/>
@@ -841,7 +841,7 @@
                 zincSource = ReplaceStr(zincSource,/\b(library\b[^\{]*?)\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/gs, (_,a,b) => {
                     console.log("parsing library: ",a);
                     a = ReplaceStr(a, replaceLineBreak, " ");
-                    return a+b+"\nendlibrary";
+                    return a+"\n"+b+"\nendlibrary";
                 });
                 zincSource = ReplaceStr(zincSource,/(;\s*);/g, "$1");
 
@@ -1213,7 +1213,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.A.1.2";
+            parsing += "\n--Conversion by vJass2Lua v0.A.1.3";
             vJassField.value = parsing
             if (document.getElementById("autoCopy").checked)
             {
