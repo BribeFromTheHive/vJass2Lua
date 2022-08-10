@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Bribe's vJass2Lua version 0.A.2.0</title>
+        <title>Bribe's vJass2Lua version 0.A.2.1</title>
     </head>
     <body>
         <input type="button" id="convert2lua" value="Convert to Lua"/>
@@ -265,6 +265,7 @@
                             console.log(str);
                     }
                 }*/
+                //if (whichType == "Rawcode") console.log("packing:",str);
                 return encoding+(array.push(str)-1);
             }
             window["unpack"+whichType] = (str) =>
@@ -272,7 +273,10 @@
                 if (array.length > 0)
                 {
                     let finder = new RegExp(encoding+"(\\d+)","g");
-                    return ReplaceStr(str,finder, (_, num) => array[num]);
+                    return ReplaceStr(str,finder, (_, num) => {
+                        //if (whichType == "Rawcode") console.log("unpacking:",array[num]);
+                        return array[num];
+                    });
                 }
                 return str;
             }
@@ -417,7 +421,7 @@
             
             parsing = ReplaceStr(parsing,/(?<!^.*\/\/.*)(".*?")/gm, (_, str) => insertString(str));
 
-            parsing = ReplaceStr(parsing,/'.{4,8}'/g, str => insertRawcode('FourCC('+str+')')); //Wrap "hfoo" or "Abil" in FourCC
+            parsing = ReplaceStr(parsing,/'(?:[^']|\\'){4}'/g, str => insertRawcode('FourCC('+str+')')); //Wrap "hfoo" or "Abil" in FourCC
 
             parsing = ReplaceStr(parsing,/^([^\/]?)\/\/\!/gm, '$1--!'); //preprocessor requests
             parsing = ReplaceStr(parsing,/\/\/(.*)/g, (_, str) => insertComment(str)); //line comments
@@ -1179,7 +1183,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.A.2.0";
+            parsing += "\n--Conversion by vJass2Lua v0.A.2.1";
             vJassField.value = parsing
             if (document.getElementById("autoCopy").checked)
             {
