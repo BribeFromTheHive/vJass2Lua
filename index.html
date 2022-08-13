@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Bribe's vJass2Lua version 0.A.2.1</title>
+        <title>Bribe's vJass2Lua version 0.A.2.2</title>
     </head>
     <body>
         <input type="button" id="convert2lua" value="Convert to Lua"/>
@@ -991,6 +991,8 @@
 
                 const isModule = (strOrMod == "module");
 
+                body = ReplaceStr(body, /\bstub\s+/g, "");
+                
                 //parse all easily-detectable variable and method declarations
                 body = ReplaceStr(body,isStructMember, function(_, indent, scope, line) {
                     if (scope != "static") {
@@ -1183,7 +1185,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.A.2.1";
+            parsing += "\n--Conversion by vJass2Lua v0.A.2.2";
             vJassField.value = parsing
             if (document.getElementById("autoCopy").checked)
             {
