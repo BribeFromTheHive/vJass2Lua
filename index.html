@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Bribe's vJass2Lua version 0.A.2.2</title>
+        <title>Bribe's vJass2Lua version 0.A.2.3</title>
     </head>
     <body>
         <input type="button" id="convert2lua" value="Convert to Lua"/>
@@ -20,6 +20,8 @@
         <input type="checkbox" id="deletecomments">Delete comments
         <input type="checkbox" id="deleteemmy">Delete Emmy Annotation
         <input type="checkbox" id="deletelinebreaks">Delete extra linebreaks
+        <br />
+        <input type="checkbox" id="avoidrepeatuntil">Don't use repeat...until loops
         <br />
         <br />
         Required Lua for vJass support:
@@ -404,9 +406,11 @@
             }
             const userDefinedSpacing = document.getElementById("spacing").value;
             const indentation = " ".repeat(userDefinedSpacing);
-
+            
             deleteComments = (document.getElementById("deletecomments").checked);
             const commentDebug = (document.getElementById("commentdebug").checked);
+
+            let noRepeatUntil = document.getElementById("avoidrepeatuntil").checked; //temporary workaround
             let parsing = vJassSource;
             
             parsing = RepeatActionOnString(parsing, str=> ReplaceStr(str,/^([^\r\n\t]*)\t/gm, (_, leadingChars) =>
@@ -419,9 +423,9 @@
             
             parsing = ReplaceStr(parsing,/^ *\/\/\! *novjass\b.*?^ *\/\/\! *\bendnovjass\b/gms, str => insertBlockComment('\n'+str)); //novjass blocks
             
-            parsing = ReplaceStr(parsing,/(?<!^.*\/\/.*)(".*?")/gm, (_, str) => insertString(str));
+            parsing = ReplaceStr(parsing,/(?<!^.*\/\/.*)("(?:[^"\\]|\\"|\\\\)*")/gm, (_, str) => insertString(str));
 
-            parsing = ReplaceStr(parsing,/'(?:[^']|\\'){4}'/g, str => insertRawcode('FourCC('+str+')')); //Wrap "hfoo" or "Abil" in FourCC
+            parsing = ReplaceStr(parsing,/'(?:[^'\\]|\\'|\\\\){4}'/g, str => insertRawcode('FourCC('+str+')')); //Wrap "hfoo" or "Abil" in FourCC
 
             parsing = ReplaceStr(parsing,/^([^\/]?)\/\/\!/gm, '$1--!'); //preprocessor requests
             parsing = ReplaceStr(parsing,/\/\/(.*)/g, (_, str) => insertComment(str)); //line comments
@@ -922,7 +926,9 @@
 
                         return 'while not \('+cond+'\) do '+cont;
                     });
-                    contents = ReplaceStr(contents,/^loop(.*)\r?\n *exitwhen([^\n\r•]*)(\s*? *)endloop/ms, 'repeat$1$3until$2');
+                    if (!noRepeatUntil) {
+                        contents = ReplaceStr(contents,/^loop(.*)\r?\n *exitwhen([^\n\r•]*)(\s*? *)endloop/ms, 'repeat$1$3until$2');
+                    }
                     contents = ReplaceStr(contents,/^loop\b(.*end)loop/ms, 'while true do$1');
                     contents = ReplaceStr(contents,/^( *)exitwhen\b([^\r\n•]*)/gm, '$1if$2 then break end');
                     contents = ReplaceStr(contents,/^( *)if *true *then break end/gm, '$1break');
@@ -1185,7 +1191,7 @@
             parsing = deleteLineBreaks(parsing);
 
             recent = vJassSource;
-            parsing += "\n--Conversion by vJass2Lua v0.A.2.2";
+            parsing += "\n--Conversion by vJass2Lua v0.A.2.3";
             vJassField.value = parsing
             if (document.getElementById("autoCopy").checked)
             {
