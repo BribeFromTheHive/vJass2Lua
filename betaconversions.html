@@ -1,0 +1,1345 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Bribe's vJass2Lua version 0.A.3.0 beta</title>
+    </head>
+    <body>
+        <input type="button" id="convert2lua" value="Convert to Lua"/>
+        <input type="checkbox" id="autoConvert" checked>Convert on paste
+        <input type="button" id="copyscript" value="Copy to Clipboard"/>
+        <input type="checkbox" id="autoCopy" checked>Copy on convert
+        <input type="button" id="revert2vjass" value="Revert to vJass"/>
+        <br/>
+        <textarea autofocus rows="40" cols="120" id="scriptblock" placeholder="Enter vJass script" wrap="off"></textarea>
+        <br />
+        <div style="font-family: roboto,verdana,arial;font-size: 13px;">
+        Configurables:
+        <input type="number" id="spacing" name="spacing" min="1" max="16" value="4" style="width: 30px;">Spacing
+        <input type="checkbox" id="addZinc">Add //! zinc wrapper
+        <input type="checkbox" id="commentdebug" checked>Comment-out debug lines
+        <input type="checkbox" id="deletecomments">Delete comments
+        <input type="checkbox" id="deleteemmy">Delete Emmy Annotation
+        <input type="checkbox" id="deletelinebreaks">Delete extra linebreaks
+        <br />
+        <input type="checkbox" id="avoidrepeatuntil">Don't use repeat...until loops
+        <br />
+        <br />
+        Required Lua for vJass support:
+        <br /><a href="https://github.com/BribeFromTheHive/Lua-Core/blob/main/vJass2Lua%20Runtime%20Plugin.lua">vJass2Lua Runtime Plugin (for Structs, Textmacros, etc.)</a>
+        <br /><a href="https://www.hiveworkshop.com/threads/global-initialization.317099/">Global Initialization (for scope/library/struct initialization)</a>
+        <br />
+        <br />
+        Optional Requirements:
+        <br /><a href="https://github.com/BribeFromTheHive/Lua-Core/blob/main/Global%20Variable%20Remapper.lua">Global Variable Remapper (for public non-constant vJass variables)</a>
+        <br />
+        <br />
+        Alternatively to the above, if this is only a JASS script, you can add this snippet to the top trigger in your map to help in case any string concatenation was missed: 
+        </div>
+        <br /><textarea cols = "70" id="stringmt" rows = "1">getmetatable("").__add = function(obj, obj2) return obj .. obj2 end</textarea>
+        <input type="button" id="copystring" value="Copy"/>
+    </body>
+    <script>
+        //Credit for generated large, fancy text goes to https://www.messletters.com/en/big-text/
+        
+        var recent = "";
+        const vJassField = document.getElementById("scriptblock");
+        var converted = false; //prevent double-click of Convert2Lua from corrupting the code
+
+        function deleteEmmies(str) {
+            if (document.getElementById("deleteemmy").checked) {
+                return ReplaceStr(str,/---@.*/g, "");
+            }
+            return str;
+        }
+        document.getElementById('deleteemmy').onchange = () => vJassField.value = deleteEmmies(vJassField.value);
+        
+        const addZincCheck = document.getElementById("addZinc")
+
+        addZincCheck.onchange = () => {
+            if (addZincCheck.checked) {
+                vJassField.value = "//! zinc\n" + vJassField.value + "\n//! endzinc";
+                addZincCheck.checked = false;
+            }
+        }
+
+        function delEmmy() {
+            vJassField.value = deleteEmmies(vJassField.value);
+        }
+        function deleteLineBreaks(str) {
+            if (document.getElementById("deletelinebreaks").checked) {
+                return ReplaceStr(str,/(\r?\n)(?: *\r?\n)*/g, "$1");
+            }
+            return str;
+        }
+        document.getElementById('deletelinebreaks').onchange = () => vJassField.value = deleteLineBreaks(vJassField.value);
+
+        function revertTovJass() {
+            let current = document.getElementById('scriptblock').value;
+            if (converted && recent != current && recent != "") {
+                converted = false;
+                document.getElementById('scriptblock').value = recent;
+            }            
+        }
+
+        document.getElementById('revert2vjass').onclick = revertTovJass;
+
+        function copySomething(str) {
+            let copy = document.getElementById(str);
+            copy.select();
+            copy.setSelectionRange(0, 99999);
+            navigator.clipboard.writeText(copy.value);
+        }
+
+        document.getElementById('copyscript').onclick = function() {
+            copySomething("scriptblock");
+        }
+
+        document.getElementById('copystring').onclick = function() {
+            copySomething("stringmt");
+        }
+
+        //used only for debugging. Copied from https://stackoverflow.com/a/57102605/18919165
+        function logDiff(a, b) {
+
+            if (a == b) return;
+            
+            let i = 0;
+            let j = 0;
+            let result = "";
+
+            while (j < b.length) {
+
+                if (a[i] != b[j] || i == a.length)
+                    result += b[j];
+                else
+                    i++;
+                j++;
+            }
+            console.log(result);
+        }
+
+        let lastRawResult = "";
+        function buildvJassVarFinder(whichWord, capture=true) {
+            let result = "\\$?\\b" + whichWord + "\\b\\$?";
+            if (capture) {
+                lastRawResult = result;
+                result = "("+result+")";
+            }
+            return result;
+        }
+        const rawvJassVar = "[A-Za-z][\\w]*";
+        const capturevJassVar = buildvJassVarFinder(rawvJassVar); //captures a vJass variable name to a group.
+        const seekvJassVar = lastRawResult;  //finds a vJass variable name (must start with a letter, underscore or $ symbol).
+        const seekIndent = "^ *";
+        const captureIndent = "("+seekIndent+")";
+        const seekToEOL = ".*";
+        const captureToEOL = "("+seekToEOL+")";
+
+        const ignoredKeywords = ["type","return","returns","endif","elseif",
+        "endwhile","extends","array","static","method","not","and","or",
+        "function","module","implement","library","requires","scope",
+        "optional","if","else","then","while","true","false","nil","do",
+        "end","endfunction","endmethod","type","repeat","until","local",
+        "constant","public","private","readonly","for","in","break"];
+
+        const replaceArray1 = new RegExp(seekIndent+capturevJassVar+" +array +"+capturevJassVar+captureToEOL, "m");
+        const seekArray     = " *\\[ *(\\d+) *\\]";
+        const replaceArray2 = new RegExp("^"+seekArray+seekArray, "m");
+        const replaceArray3 = new RegExp("^"+seekArray, "m");
+        const replaceVar1   = new RegExp(seekIndent+capturevJassVar+"( +)"+capturevJassVar+captureToEOL, "m");
+        
+        const seekLineBreak = "\\r?\\n";
+        const seekLineBreakR= new RegExp(seekLineBreak);
+
+        function ReplaceStr(str, regexPattern, replacement) {
+            //let original = str;
+
+            str = str.replace(regexPattern, replacement);
+            
+            //logDiff(original,str);
+            return str;
+        }
+
+        function RepeatActionOnString(str, action) {
+            let tempStr = "";
+            while (tempStr != str) {
+                tempStr = str;
+                str = action(str);
+            }
+            return str;
+        }
+
+        function parseVar(line, isLocal=false) {
+            //check for array declarations, first
+            let newLine = ReplaceStr(line,replaceArray1,
+            (_, type, name, remainder) =>
+            {
+                //let tlen = " ".repeat(type.length) + "      "; //##formatting
+                let rawtype = type;
+                type = " ---@type "+type;
+                let result = ReplaceStr(remainder,replaceArray2,
+                (_, width, height) =>
+                    `${name}=vJass.array2D\(${width}, ${height}\)${type}\[\]\[\] `
+                )
+                type+="[]";
+                if (result == remainder) {
+                    result = ReplaceStr(remainder,replaceArray3, (_, size) => `${name}=\{size=${size}\}${type} `);
+                    if (result == remainder) {
+                        let arrayType;
+                        switch (rawtype) {
+                            case "integer":
+                                            addToIntStack(name);
+                            case "real":
+                                            arrayType = "0";
+                            break;
+                            case "boolean": arrayType = "false";
+                            break;
+                            case "string":  arrayType = '""';
+                            break;
+                            default:        arrayType = "{}";
+                        }
+                        if (arrayType != "{}") {
+                            arrayType = "__jarray("+arrayType+")";
+                        }
+                        result = name + "=" + arrayType+type+" " + remainder;
+                    }
+                }
+                return result;
+            });
+            if (newLine != line) {
+                return newLine; //array has been parsed
+            }
+            return ReplaceStr(line,replaceVar1, 
+            (_, type, tlen, name, remainder) => {
+                let tail = "";
+                let hasComment = remainder.search(/•/);
+                tlen += " ".repeat(type.length);
+                if (hasComment >= 0) {
+                    tail = remainder.substring(hasComment);
+                    remainder = remainder.substring(0, hasComment);
+                }
+                if (type == "integer") {
+                    addToIntStack(name);
+                } else
+                if (type == "key") {
+                    remainder = "=vJass.key()"+ remainder;
+                    type = "integer";
+                    tlen = "";
+                }
+
+                tail = " ---@type " + type + " " + tail;
+                let isSet = remainder.search(/^ *\=/m);
+                if (isSet < 0) {
+
+                    if (isLocal) return name + tail; //local variable declaration does not need assignment.
+
+                    return name + "=nil" + tail; //global variable declaration needs assignment to be valid syntax.
+                }
+                return name + tlen + remainder + tail; //variable with assignment has been parsed
+            });
+        }
+
+        function parseIsolatedVar(prefix, wholeMatch, w1, w2, index) {
+
+            if (ignoredKeywords.includes(w1) || ignoredKeywords.includes(w2)) return wholeMatch;
+            
+            return prefix+parseVar(wholeMatch);
+        }
+
+        var deleteComments = false;
+
+        //"window" works similarly to Lua's "_G" table in that you can use concatenation to generate variable names dynamically.
+        function declarePackage(whichType, encoding, inlinedEncoding="•") {
+            let array = [];
+            encoding = inlinedEncoding+'#'+encoding+'#'
+
+            window["insert"+whichType] = (str) => {
+                if (whichType == "Comment"){
+                    if (deleteComments) return "";
+                    str = "--"+str;
+                } /*else {
+                    switch (whichType) {
+                        case "Zinc": case "ZincStruct": case "ZincFunc":
+                            console.log(str);
+                    }
+                }*/
+                return encoding+(array.push(str)-1);
+            }
+            window["unpack"+whichType] = (str) => {
+                if (array.length > 0)
+                {
+                    let finder = new RegExp(encoding+"(\\d+)","g");
+                    return ReplaceStr(str,finder, (_, num) => array[num]);
+                }
+                return str;
+            }
+        }
+        declarePackage("Comment", "cmt");
+        declarePackage("String", "str", "`");
+        declarePackage("Rawcode", "fcc", "`");
+        declarePackage("Zinc","znc");
+        declarePackage("ZincFunc","fun");
+        declarePackage("ZincStruct","zst");
+        declarePackage("ZincVar","zvr");
+        declarePackage("ZincPublic","pub");
+
+        function insertBlockComment(comment) {
+            return insertComment('[['+comment+']]');
+        }
+        
+        let getEndParenthesisIndex = (parenthesisStr, startingDepth=0) => {
+            let depth = startingDepth;
+
+            for (let i=0; i<parenthesisStr.length; i++) {
+                switch (parenthesisStr[i]) {
+                    case "(":
+                                depth++;
+                    break;
+                    case ")":
+                                if (--depth <= 0) return i+1;
+                }
+            }
+        }
+        
+        let confirmBracketKeywordCache = {},
+        confirmBracketKeyword = (whichKeyWord, stringToMatch) => {
+
+            let tester = confirmBracketKeywordCache[whichKeyWord];
+            if (!tester) {
+                tester = new RegExp("\\W"+whichKeyWord+"\\W");
+                confirmBracketKeywordCache[whichKeyWord] = tester;
+            }
+            return tester(stringToMatch);
+        }
+        let addExtraEndBlock, parseBracketContents; //Meant for parsing stuff within Zinc functions.
+
+        parseBracketContents = (bracketStr, inName, startingDepth=0, terminate="") => {
+            let depth = startingDepth;
+            let nextDepthPoint;
+            let lastDepthPoint = 0; //used for tracking regex keywords upon increasing the bracket depth
+
+            let wordDepth = 0;
+            let keyWord = "";
+
+            addExtraEndBlock = false;
+
+            bracketLoop:
+            for (let i=0; i<bracketStr.length; i++) {   
+                switch (bracketStr[i]) {
+                    case "{":
+                        if (depth++ == startingDepth && terminate != "" && lastDepthPoint == 0) {
+
+                            nextDepthPoint = bracketStr.substring(0,i).match(/\b(?:for|while|else|if)\b/);
+
+                            if (nextDepthPoint>=0) {
+                                lastDepthPoint = nextDepthPoint;
+                                addExtraEndBlock = true; //happens with stuff like "else while (blah) {...do stuff...}" where "else" has no brackets but contains something that has brackets.
+                            }
+                        }
+                    continue bracketLoop;
+                    case "}":
+                        if (--depth <= 0) {
+                            return i+1; //decrease depth when a closing bracket is found. If 0 or less, return that index.
+                        }
+                    continue bracketLoop;
+                    case terminate:
+                        if (depth==startingDepth) return i+1; //if no brackets were used, terminate at the first escape character (which would be a ";" if defined)
+                    default:
+                    continue bracketLoop;
+                    case "e":
+                            keyWord = "else";
+                    break;
+                    case "f":
+                            keyWord = "for";
+                    break;
+                    case "w":
+                            keyWord = "while";
+                    break;
+                    case "i":
+                            keyWord = "if";
+                }
+                wordDepth = keyWord.length;
+                if (bracketStr.substring(i,i+wordDepth) == keyWord)
+                {
+                    let j = i + wordDepth;
+                    if (keyWord == "else" && bracketStr.substring(j,j+2) == "if")
+                    {
+                        keyWord = "elseif";
+                        wordDepth += 2;
+                    }
+                    if (confirmBracketKeyword(keyWord, bracketStr.substring(i-1, j+1)))
+                    {
+                        let endPos;
+                        switch (keyWord) {
+                            case "else":
+                                endPos = j;
+                            break;
+                            default:
+                                endPos = getEndParenthesisIndex(bracketStr.substring(j));
+                            case "for":
+                            case "while":
+                                //add string " do "
+                            break;
+                            case "elseif":
+                            case "if":
+                                //add string " then "
+                            break;
+                        }
+                        i=j-1;
+                    }
+                }
+            }
+            return -1; //insufficient endbrackets were found.
+        }
+        function parseZincFunctions(str) {
+            return RepeatActionOnString(str, funcStr=> {
+
+                let funcParts = funcStr.match(/(function|(?:static\s+)?method)([^{}()]*)\(([^{}()]*)\)([^{}()]*)\{/);
+                if (funcParts != null) {
+                    //[0] = whole string match - used for getting the length to determine how much of the substring to clip out.
+                    //[1] = function or method
+                    //[2] = name and any operator stuff
+                    //[3] = parameters
+                    //[4] = return properties
+                    //[5] = the point in the string where this match begins
+
+                    let pos1 = funcParts[5];
+                    let pos2 = funcParts[0].length;
+
+                    /*if (funcParts[1] != "function" && funcParts[1] != "method")
+                    {
+                        funcParts[1] = "method" //remove "static" keyword.
+                    }*/
+
+                    let remainder = funcStr.substring(pos1+pos2);
+                    
+                    let pos3 = parseBracketContents(remainder, "function", 1);
+                    
+                    if (pos3 < 0) alert("syntax error: function without end bracket: "+funcParts[0]);
+                    
+                    let contents = remainder.substring(0,pos3);
+                    remainder = remainder.substring(pos3);
+
+                    return funcStr.substring(0,pos1)+contents+remainder;
+                }
+                return funcStr;
+            });
+        }
+
+        const zincVarPrefix = "KILL_THIS_ZINC_VAR_PREFIX_"; //used to catch extra types that were chained with commas
+        
+        const zincVarFinder = [];
+        function createZincVarFinder(findArray=false, deepSearch=false) {
+
+            let w1 = "(?:"+zincVarPrefix+")*(\\$?"+rawvJassVar+"\\b\\$?)";
+
+            if (findArray)
+                findArray = "\\s*(\\[[^\\[\\]]*?\\])";
+            else
+                findArray = "()"; //create a dummy capture group.
+            
+            let open = "( *)";
+            let flag = "g";
+            if (deepSearch) {
+                w1 += "(\\s*)((?:^ *•[^\\r\\n]*\\s*)*)"; //extremely expensive operation, but includes comments as well as whitespace.
+                open = "^"+open;
+                flag += "m";
+            } else {
+                w1 += "(\\s+)()";
+            }
+            open += w1+capturevJassVar; //pattern is set to capture two vJass variables (the first is assumed to be a type, but I will check against it later to make sure it's not a keyword).
+            
+            let close = "([^;,(•]*?(?:\\([^()]*(?:\\([^()]*\\))*(?:[^()]*\\([^()]*\\))*[^()]*\\))*)\\s*([;,\\{\\}])( *•.*)*"; //pattern set to find a semicolon or comma, skips up to 2 levels of parenthesis (if present), then includes the remainder of the line.
+            
+            let result = new RegExp(open + findArray + close, flag);
+            
+            //console.log("Zinc variable finder: ", result);
+            
+            return result;
+        }
+        zincVarFinder[0] = createZincVarFinder();
+        zincVarFinder[1] = createZincVarFinder(true);
+        zincVarFinder[2] = createZincVarFinder(false, true);
+        zincVarFinder[3] = createZincVarFinder(true, true);
+
+        const replaceLineBreak = new RegExp(seekLineBreak, "g");
+
+
+        /*vJassField.addEventListener('keydown', function(e) { //from https://stackoverflow.com/questions/6637341/use-tab-to-indent-in-textarea
+            let code = e.keyCode || e.which;
+            if (code == 9) {
+                e.preventDefault();
+                let start = this.selectionStart;
+                let len = document.getElementById("spacing").value
+                let spacing = " ".repeat(len);
+
+                // set textarea value to: text before caret + tab + text after caret
+                this.value = this.value.substring(0, start) + spacing + this.value.substring(this.selectionEnd);
+                
+                // put caret at right position again
+                this.selectionStart = this.selectionEnd = start + len;
+            }
+            return false;
+        });*/
+
+/*
+    how variables storage needs to function:
+    create an array per scope which is scanned in the order of:
+    1. function/method
+    2. struct/module enclosure
+    3. scope enclosure
+    4. library enclosure  
+    
+    array stores objects with property of type and variable name
+    
+    However, we only need to store integers into scope, and detect when they are assigned within the scanned scope.
+    
+    Structure:
+    
+    blob: contains list of integers
+    blob group: checked in order of blob as defined in scope order above
+*/
+
+        let intStack = [];
+
+        let isVarInt = varName => intStack.indexOf(varName) >= 0;
+
+        function addToIntStack(varName)
+        {
+            if (! isVarInt(varName))
+                intStack.push(varName);
+        }
+
+        function parseScript() {
+            const vJassSource = vJassField.value;
+            if (converted && (vJassSource.search(/^--Conversion by vJass2Lua/m) >= 0)) {
+                //console.log("duplicate conversion detected");
+                return;
+            } else {
+                //console.log("conversion commencing");
+                converted = true;
+            }
+            const userDefinedSpacing = document.getElementById("spacing").value;
+            const indentation = " ".repeat(userDefinedSpacing);
+
+            deleteComments = (document.getElementById("deletecomments").checked);
+            const commentDebug = (document.getElementById("commentdebug").checked);
+            
+            let noRepeatUntil = document.getElementById("avoidrepeatuntil").checked; //temporary workaround
+            
+            let parsing = vJassSource;
+            
+            parsing = RepeatActionOnString(parsing, str=> ReplaceStr(str,/^([^\r\n\t]*)\t/gm, (_, leadingChars) =>
+            {
+                let len = leadingChars.length % userDefinedSpacing; //instead of zapping tabs to userDefinedSpacing...
+                len = userDefinedSpacing - len;                     //get the remaining length of tabs...
+                return leadingChars + " ".repeat(len);              //this preserves sub-indentation (such as when a user aligns = signs)
+            })); //example: 17 characters + a tab, the tab should be equal to 3 spaces...
+                 //17 mod 4 = 1, 4 - 1 = 3. That's our result.
+            
+            parsing = ReplaceStr(parsing,/^ *\/\/\! *novjass\b.*?^ *\/\/\! *\bendnovjass\b/gms, str => insertBlockComment('\n'+str)); //novjass blocks
+            
+            parsing = ReplaceStr(parsing,/(?<!^.*\/\/.*)("(?:[^"\\]|\\"|\\\\)*")/gm, (_, str) => insertString(str)); //Store strings into an array to protect them from being parsed.
+
+            parsing = ReplaceStr(parsing,/'(?:[^'\\]|\\'|\\\\){4}'/g, str => insertRawcode('FourCC('+str+')')); //Wrap 'hfoo' or 'Abil' in FourCC.
+
+            parsing = ReplaceStr(parsing,/^([^\/]?)\/\/\!/gm, '$1--!'); //preprocessor requests
+            parsing = ReplaceStr(parsing,/\/\/(.*)/g, (_, str) => insertComment(str)); //line comments
+
+            parsing = ReplaceStr(parsing,/\/\*((?:(?!\*\/).)*?)\*\/( *•.*?)*$/gms, (_, a, b="") => insertBlockComment(a)+b); //convert safe block comments that don't have trailing text at the end
+            
+            parsing = ReplaceStr(parsing,/([;}] *)\/\*((?:(?!\*\/).)*?)\*\//gms, (_, a, b) => a+insertBlockComment(b)); //convert safe block comments that were preceded by a ; or }
+            
+            parsing = ReplaceStr(parsing,/\/\*(?:(?!\*\/).)*?\*\//gms, ''); //delete all remaining blockquotes as "unsafe" to parse.
+            parsing = ReplaceStr(parsing,/^ *native\b.*/gm, str => insertComment(str)); //comment-out natives
+
+            parsing = ReplaceStr(parsing,/\b(?:do|in|end|nil|repeat|until)\b/g, '$&_'); //fix Lua keywords that aren't found in vJass nor Zinc.
+
+            parsing = ReplaceStr(parsing,/([\w\$]+):([\w\$]+)/g, "$2[$1]"); //this is some weird vJass array variety that obviously won't work in Lua.
+
+            //convert conventional null and != to Lua's weird versions of them.
+            parsing = ReplaceStr(parsing,/\bnull\b/g, 'nil');
+            parsing = ReplaceStr(parsing,/!=/g, '~=');
+/*           ________   __  .__   __.   ______ 
+            |       /  |  | |  \ |  |  /      |
+            `---/  /   |  | |   \|  | |  ,----'
+               /  /    |  | |  . `  | |  |     
+              /  /----.|  | |  |\   | |  `----.
+             /________||__| |__| \__|  \______| ##Zinc##
+*/
+            
+            function parseZincVar(prefix, wholeMatch, indent, w1, gap=" ", tailgap="", w2, array="", remainder="", sign, tail="", isDeep)
+            {
+                if (w1 == w2 || ignoredKeywords.includes(w1) || ignoredKeywords.includes(w2) || sign == "{")
+                {
+                    //console.log("complete failure:",wholeMatch);
+                    return wholeMatch;
+                }
+                remainder = ReplaceStr(remainder,replaceLineBreak, " ");
+
+                let spacebreaker = gap.search(seekLineBreakR);
+                if (spacebreaker >=0)
+                {
+                    tailgap = gap.substring(spacebreaker) + tailgap;
+                    
+                    gap = gap.substring(0,spacebreaker) || " ";
+                    //console.log("gap found:", w1 + gap + w2);
+                }
+                if (sign == ",")
+                {
+                    tail += "\n"+indent+zincVarPrefix+w1;
+                    //console.log("new tail:",tail);
+                }
+                tail += tailgap;
+                
+                let result;
+                if (array!="")
+                {
+                    if (array == "[]") array = "";
+
+                    result = w1 + " array " + w2 + array;
+                } else {
+                    result = w1 + gap + w2;
+                    //console.log("non-array found");
+                }
+                result += remainder;
+                let test = parseVar(result);
+                if (test == result) {
+                    console.log("failure:",wholeMatch);
+                    return wholeMatch;
+                }
+                //console.log("new var:", prefix+result, "indent:",indent.length);
+
+                if (prefix == "") result = test;
+
+                result = indent+prefix+result;
+
+                //if (isDeep) console.log("deep var:",result+tail);
+
+                return insertZincVar(result)+tail;
+            }
+            function parseZincVars(str, prefix)
+            {
+                let parseZincVarsByType = whichType =>
+                {
+                    let varTypeFinder = zincVarFinder[whichType];
+                    let isDeep = (whichType > 1);
+
+                    str = RepeatActionOnString(str, repeatStr=> ReplaceStr(repeatStr, varTypeFinder, (wholeMatch, indent, w1, gap, deepGap, w2, array, remainder, sign, tail) => parseZincVar(prefix, wholeMatch, indent, w1, gap, deepGap, w2, array, remainder, sign, tail, isDeep)));
+                }
+                //console.log("shallow search:", str);
+
+                parseZincVarsByType(1); //parse Zinc arrays
+                parseZincVarsByType(0); //parse Zinc scalars
+
+                if (str.search(new RegExp(zincVarPrefix)) >= 0)
+                {
+                    //console.log("deep search:", str);
+                    //need to go deeper. Comments were sandwiched in between variable types and chained, breaking the flow.
+                    //Issue discovered in: https://www.hiveworkshop.com/threads/cam-system-v3.144480/
+
+                    parseZincVarsByType(3); //parse Zinc arrays, checking for comments.
+                    parseZincVarsByType(2); //Zinc scalars
+                }
+                str = unpackZincVar(str);
+                str = ReplaceStr(str,new RegExp(zincVarPrefix, "g"), "");
+                return str;
+            }
+
+            //console.log(parsing,"\n",vJassSource);
+            var inZinc = true;
+            parsing = ReplaceStr(parsing,/^ *\-\-\! *zinc(.*?)^ *\-\-\! *endzinc/gms,
+            (_, zincSource) =>
+            {
+                //                      [               detect the handling of function/method                                             ] [          detect other kinds of basic blocks             ] [              common to both                  ]
+                //                      [                               $1                                                                 ] [                           $7                            ] 
+                const zincBracket = /(?:((\b(?:function|method|operator)\b\s*([\w$]+)?)([\[\]\=\s]*)\(([\w$\s,]*?)\)\s*(?:\-\>\s*([\w$]+))?)|(\b(if|else|elseif|while)\b(\s*)(\((?:(?!then)[^{;])*?\))?))(\s*){(\s*)([^{}]*?)(\s*)}(?:(\s*)(else(?:if)?))?/gms;
+                //                       [       $2                                   ][    $4     ]  [    $5    ]               [  $6  ]       [         $8         ]  [ $9][        $10           ]    [$11] [$12][  $13  ][$14]    [$15][    $16    ]
+                //                                                           [  $3  ]
+                // corresponding information defined in the replacer function which uses this regular expression.
+
+                zincSource = ReplaceStr(zincSource, /\bconstant\s+/g, "");
+
+                zincSource = ReplaceStr(zincSource,/(.?)(\&\&|\|\||\!)(.?)/g,
+                (_, startp=" ", str, endp=" ") =>
+                {
+                    switch(str) {
+                        case "&&":
+                            str = "and";
+                            break;
+                        case "||":
+                            str = "or";
+                            break;
+                        default:
+                            str = "not";
+                    }
+                    if (startp != " ") startp += " ";
+                    if (endp != " ") endp = " "+endp;
+                    return startp + str + endp;
+                });
+
+                zincSource = ReplaceStr(zincSource,/([\w\$]+(?:[\[\]\w\$\.]*))(\s*)([\+\-\*\/])=/g,"$1$2=$1$3"); // += -= *= /= syntax isn't supported in Lua.
+                
+                function zincForLoop(contents, remainder, endspacing)
+                {
+                    let result = contents;
+                    let indent = indentation;
+                    if (endspacing == "; ") indent = "";
+
+                    result = ReplaceStr(result,/([^;]+);([^;]+);([^;]+)/, (_,start,comp,end) =>
+                    {
+                        return start+"; while "+comp+" do "+remainder+endspacing+indent+end+endspacing+"endwhile";
+                    });
+                    if (result != contents) return result;
+
+                    return ReplaceStr(result,/([^=><!]+) *([=><!]+) *([^=><!]+) *([=><!]+) *([^=><!]+)/, (_, initFor, fromFor, iterFor, tilFor, endFor) =>
+                    {
+                        let incDec = 1;
+                        if (fromFor[0] == ">") incDec = -1;
+                        let iterVal = initFor;
+                        if (fromFor[1] == undefined) 
+                        {
+                            let iterInt = parseInt(iterVal);
+                            if (iterInt != NaN) iterVal = iterInt + incDec;
+                            else iterVal += "+"+incDec;
+                        }
+                        if (iterFor[iterFor.length-1]==" ") iterFor = iterFor.slice(0,-1);
+
+                        return iterFor + "="+iterVal+"; while "+iterFor+tilFor+endFor+ " do "+remainder+endspacing+indent+iterFor+"="+iterFor+"+"+incDec+endspacing+"endwhile";
+                    });
+                    //console.log("no loop match");
+                }
+
+                /*
+                    Parsing within code. Do I do a descent from library { > public {} > struct {} > function {} } and stitch it all back together?
+
+                    Currently finding it block within block, randomly, 
+                */
+
+                zincSource = ReplaceStr(zincSource,/\belse\s*(?:static *)?if/g,"elseif");
+                zincSource = RepeatActionOnString(zincSource, str => {
+
+                    //Zinc allows people to write if (conds) action; instead of forcing if (cond) {action}, hence a lot more complexity here to add brackets.
+                    str = ReplaceStr(str,/\b(if|elseif|else)\b((?:(?!then|if|else)[^{}])*?)(;|\b(?:(?:while|for)\s*{\s*[^{}]*?\s*}))/g,
+                    (ifMatch, ifStatement, ifContents, endStatement) =>
+                    {
+                        if (ifStatement != "else") {
+                            let endPos = parseBracketContents(ifContents, "(", ")");
+                            if (endPos >= 0) {
+                                let cnt1 = ifContents.substring(0, endPos);
+                                let cnt2 = ifContents.substring(endPos);
+                                ifContents = cnt1 + " { " + cnt2;
+                                //console.log(endPos, "cnt1:",cnt1, "cnt2:",cnt2);
+                            }
+                        } else {
+                            if (endStatement == ";") {
+                                if (ifContents.search(/endif/) >= 0) { return ifMatch; }
+                                //console.log("ifStatement", ifStatement, "ifContents", ifContents);
+                                return ifStatement + ifContents + " endif ";
+                            }
+                            ifStatement += " { "; 
+                        }
+                        if (endStatement == ";") { endStatement = "}" }
+                        else { endStatement += "}" };
+                        //console.log("if:", ifStatement, "contents:", ifContents, "end:", endStatement);
+                        return ifStatement + ifContents + endStatement
+                    });
+                    
+                    //console.log("for", str);
+
+                    str = ReplaceStr(str,/\bfor *\(((?:[^\(\)\{\}\r\n]*(?:\([^\(\)\{\}]*\))*)*)\)((?:(?!do)[^{}])*?);/g, (_,forConds, forLoop) => zincForLoop(forConds, forLoop, "; "));
+                    
+                    str = ReplaceStr(str,/\bfor *\(((?:[^\(\)\{\}]*(?:\([^\(\)\{\}]*\))*)*)\)(\s*)(?:\{([^{}]*(\r?\n *){0,1})\})/g, (_,forConds, spacing,forLoop,endspacing="; ") => zincForLoop(forConds, spacing+forLoop, endspacing));
+
+                    str = ReplaceStr(str,zincBracket, (wholeBracketMatch
+                    , isFunction                //1  this grouping will be defined if the regex pattern aligns with the structure of a Zinc function.
+                        , functionOrSomethin    //2  it's either going to be the keyword "function", "method" or "operator".
+                        , functionName          //3  for anonymous functions, this needs to be optional.
+                        , operatorSymbols       //4  defined if found symbols like []=
+                        , args                  //5  (integer i, unit u, code c) or just ()
+                        , returnType = "nothing"//6  (boolexpr/real/widget) in a return value
+                    , isNotFunction             //7  this grouping is defined if the regex pattern aligns with "while, if, else, elseif"
+                        , name                  //8  A Zinc keyword.
+                        , startpadding0         //9  spacing after the Zinc keyword.
+                        , condOrRange           //10 if there are any (parenthesis) detected, capture them here.
+                    , startpadding1             //11 spacing before the {
+                    , startpadding2             //12 spacing after the {
+                    , contents                  //13 stuff between the {}
+                    , endpadding1               //14 spacing before the }
+                    , endpadding2               //15 if there is an else/elseif, capture spacing after the } (just used for whitespace consistency)
+                    , isElse                    //16 else or elseif (or this is just undefined).
+                    ) => {
+                        startpadding1 = startpadding1 || " ";
+                        startpadding2 = startpadding2 || " ";
+                        endpadding1 = endpadding1 || " ";
+                        if (isFunction != undefined) {
+                            let isValidFunc = "function";
+                            //console.log("is function:", isFunction);
+                            if (functionName != undefined) {
+                                isValidFunc = ReplaceStr(functionOrSomethin,/^(method|function|operator).*/ms, "$1");
+                                if (isValidFunc == functionOrSomethin) {
+                                    //console.log("failed to match function:", wholeBracketMatch) ; 
+                                    return wholeBracketMatch;
+                                }
+                            }
+                            if (isValidFunc == "function") {
+                                endpadding1 += "endfunction";
+                                if (functionName == "onInit")
+                                    endpadding1 += "; OnInit(function() Require 'vJass2Lua'; onInit() end)";
+                            } else {
+                                endpadding1 += "endmethod";
+                            }
+                            //console.log(args);
+                            args = ReplaceStr(args,replaceLineBreak, " ");
+                            args = ReplaceStr(args, /  +/g, " ")
+                            args = ReplaceStr(args,/^\s*$/m, "nothing");
+                            args = " takes " + args;
+                            args += " returns " + returnType;
+                            //console.log(args);
+
+                            contents = ReplaceStr(startpadding2+contents,/\belse\s*while\b[^\{\}]*?endwhile(?!\s+endif\b)/gm, "$& endif");
+                            contents = parseZincVars(contents,"local ");
+                            contents = ReplaceStr(contents, /\bstatic\s+method\s+/, "function"); //convert static method to the "function" keyword used by vJass
+
+                            return insertZincFunc(functionOrSomethin + operatorSymbols + args + startpadding1 + contents + endpadding1);
+                        } else {
+                            //console.log("is not function:", isNotFunction);
+                            startpadding0 = startpadding0 || " ";
+                            switch(name){
+                                case "if": case "elseif": case "else":
+                                    if (condOrRange != undefined) {
+                                        let endPos = parseBracketContents(condOrRange, "(", ")");
+                                        if (endPos < condOrRange.length && endPos >= 0) {
+                                            //rebuild the output to allow this match to be "discarded" and parsed after any contained while/for loops
+                                            endPos = parseBracketContents(wholeBracketMatch, "(", ")");
+                                            let cnt1 = wholeBracketMatch.substring(0, endPos);
+                                            let cnt2 = wholeBracketMatch.substring(endPos);
+                                            //console.log("skipping conds for", cnt1, "..and...", cnt2)
+                                            let cnt3 = "";
+                                            if (isElse != undefined) {
+                                                let i = cnt2.lastIndexOf("else");
+                                                let splitCnt2_3 = cnt2
+                                                cnt2 = cnt2.substring(0, i);
+                                                cnt3 = splitCnt2_3.substring(i);
+                                            }
+                                            //console.log("cnt1",cnt1, "cnt2",cnt2 , "cnt3",cnt3);
+                                            return cnt1 + "{" + cnt2 + "}" + cnt3;
+                                        }
+                                        //console.log("parsing conds for", wholeBracketMatch)
+                                        condOrRange = condOrRange + startpadding1+"then";
+                                    } else { 
+                                        condOrRange = ""; 
+                                    }
+                                    if (isElse != undefined) {
+                                        if (endpadding2 == " ") { endpadding2 = ""; }
+                                        endpadding1 += endpadding2 + isElse;
+                                    } else {
+                                        endpadding1 += "endif";
+                                    }
+                                    return name + startpadding0+ condOrRange +startpadding2+ contents+endpadding1;
+                                case "while":
+                                    if (isElse != undefined) { endpadding2+=isElse }
+                                    else { endpadding2 = ""; }
+                                    //console.log("parsing while", name + startpadding0+condOrRange + " do " +  contents+endpadding1+"endwhile "+endpadding2)
+                                    return name + startpadding0+condOrRange + " do " +  contents+endpadding1+"endwhile "+endpadding2;
+                                default:
+                                    console.log("something weird happened");
+                                    //return name + startpadding0+condOrRange + contents+endpadding1+"end"+name;
+                            }
+                        }
+                    });
+                    //let what = str
+                    //if (what != str) logDiff(what, str);
+                    return str;
+                });
+                //Extract Zinc structs and handle the struct and library scopes separately.
+                //console.log("zinc contents:",zincSource);
+
+                const zincFindPubPrivBrackets = /\b(public|private)\s*\{([^\{\}]*)\}/g;
+
+                function ProcessStructOrModule(header, str)
+                {
+                    str = ReplaceStr(str,zincFindPubPrivBrackets, (_,a,b) => {
+                        //console.log("getting rid of public/private:",b);
+                        b = parseZincVars(b,a+" ");
+                        return b;
+                    });
+                    
+                    str = ReplaceStr(str, /\b(?:optional\s+)*module\b/g, "implement");
+                    
+                    str = RepeatActionOnString(str, unpackZincFunc);
+                    
+                    return insertZincStruct(header + str + "endstruct");
+                }
+                
+                //console.log(zincSource);
+                zincSource = ReplaceStr(zincSource,/(struct[\s\w\$\[\]]*?)\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/g, (_,declaration, contents) =>
+                {
+                    declaration = ReplaceStr(declaration,/\[[^\[\]]*\]/, " extends array ");
+                    
+                    //console.log("struct contents:",contents);
+                    return ProcessStructOrModule(declaration, contents);
+                });
+
+                zincSource = ReplaceStr(zincSource,/\bmodule\s+([\w$]+)\s*\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/g,(_,name, contents)=>
+                {
+                    return ProcessStructOrModule("module "+name+"\n",contents);
+                })
+
+                let zincAddPrefix = (prefix, str)=> ReplaceStr(str, /•#(?:fun|zst)/g, match => prefix + match);
+
+                let zincProcessPublic = str => insertZincPublic(parseZincVars(str,""));
+
+                //process public/private brackets outside of structs
+                zincSource = ReplaceStr(zincSource, zincFindPubPrivBrackets, (_,a,b) =>
+                {
+                    if (a == "public")
+                        b = zincProcessPublic(b);
+                    return b;
+                });
+                //process single-declaration public function/struct
+                zincSource = ReplaceStr(zincSource, /\bpublic\b\s+(•.+)/g, (_,line) => zincProcessPublic(line));
+
+                //process single-declaration public variable
+                zincSource = ReplaceStr(zincSource, /\bpublic\b\s+([^\s][^;]+;)/g, (_,line) => zincProcessPublic(line));
+
+                zincSource = ReplaceStr(zincSource, /\bprivate\s+/g, ""); //get rid of private keywords added unnecessarily by the user.
+
+                zincSource = zincAddPrefix("private ",zincSource);
+
+                //console.log(zincSource);
+                
+                zincSource = parseZincVars(zincSource,"local ");
+                
+                zincSource = ReplaceStr(zincSource, /\btype\b/g, "private $&");
+
+                //console.log(zincSource);
+
+                zincSource = unpackZincPublic(zincSource);
+
+                zincSource = unpackZincStruct(zincSource);
+
+                zincSource = RepeatActionOnString(zincSource, unpackZincFunc);
+
+                zincSource = ReplaceStr(zincSource, /\b(local *)*public /g, "");
+
+                zincSource = ReplaceStr(zincSource,/^(( *)[\w][^\r\n;]*)(\bwhile\b[^\{\}]*?)endwhile *([^ •\d\#]*)/gm, (_, whatever, spacing="", block, trail="") =>
+                {
+                    //resolves issue encountered with RetroFade where there is an if-block without brackets containing a while-loop
+                    
+                    block = ReplaceStr(block,/\n(?=.*\n)/g, "\n"+indentation);
+                    trail = "\n"+spacing+trail;
+                    return whatever+"\n"+spacing+indentation+block+indentation+"endwhile"+trail;
+                });
+                zincSource = ReplaceStr(zincSource,/\;( *)(\r?\n|•)/gm," $1$2"); //delete all trailing semicolons.
+                zincSource = ReplaceStr(zincSource,/^( *)\; */gm,"$1 "); //delete all leading semicolons.
+                zincSource = ReplaceStr(zincSource,/end(?:if|while|)/g, "end");
+                
+                //console.log("about to parse library:",zincSource);
+
+                zincSource = ReplaceStr(zincSource,/\b(library\b[^\{]*?)\{((?:[^\{\}]*(?:\{[^\{\}]*\})*)*)\}/gs, (_,a,b) => {
+                    //console.log("parsing library: ",a);
+                    a = ReplaceStr(a, replaceLineBreak, " ");
+                    return a+"\n"+b+"\nendlibrary";
+                });
+                zincSource = ReplaceStr(zincSource,/(;\s*);/g, "$1");
+
+                return insertZinc(zincSource); //pack Zinc away into an array
+            });
+            inZinc = false;
+            parsing = ReplaceStr(parsing,/\b(?:for|break|while)\b/g, '$&_'); //fix Lua keywords that aren't found in JASS but are found in Zinc.
+            
+            parsing = unpackZinc(parsing);
+
+            parsing = ReplaceStr(parsing,/^( *)debug +(?:(?:set|call) *)?/gm, (_,indent) => 
+            {
+                if (commentDebug) indent+="--debug ";
+                return indent;
+            });  //convert debug lines to comments
+            
+            //Miscellaneous parsing:
+            parsing = ReplaceStr(parsing,/^( *)(?:set|call|constant) +/gm, '$1');      //these keywords don't exist in Lua
+            parsing = ReplaceStr(parsing,/^( *end)if/gm, '$1');
+            parsing = ReplaceStr(parsing,/^( *)static +if\b/gm, '$1if');               //static-if is a vJass compile-time optimization, which Lua doesn't have.
+
+            parsing = ReplaceStr(parsing,/\.exists\b/g, '');                           //This vJass feature is the same as simply reading the variable in Lua.
+            parsing = ReplaceStr(parsing,/'\\?(.)'/g, (_,char) => char.charCodeAt(0)); //convert 'a' or ';' into their integer equivalents.
+            parsing = ReplaceStr(parsing,/\" *\+/g, '\"..'); //..
+            parsing = ReplaceStr(parsing,/\+ *\"/g, '..\"'); //fix predictable string cocatenation
+
+            parsing = ReplaceStr(parsing,/(.)\.([\$\w]+) *\(/gm, (_,firstChar,methodCaller) =>
+            {
+                if (firstChar == " ") firstChar = " self";
+                return firstChar + ":"+methodCaller+"("; //treat all x.method() as x:method() just in case we need to pass x as "self".
+            });
+            //Convert vJass dynamic array declarations
+            parsing = ReplaceStr(parsing,/^( *)(?:private\.|public\.)* *type +(\w+) +extends +(\w+) +array *\[ *(\d+) *\]/g, "$1local $2 \= Struct\(\);$2\.size \= $4 ---@type $3\[\]");
+            parsing = ReplaceStr(parsing,/^( *)interface\b +([\$\w]+)(.*?)^ *endinterface/gm, '$1Struct $2 = vJass\.interface\(true\)\n$1--[[$3$1]]');
+            parsing = ReplaceStr(parsing,/^( *)(?:public|private)* *function interface/gm, "$1---@class")
+            
+/*          ____    ____      ___      .______       __       ___      .______    __       _______      _______.
+            \   \  /   /     /   \     |   _  \     |  |     /   \     |   _  \  |  |     |   ____|    /       |
+             \   \/   /     /  ^  \    |  |_)  |    |  |    /  ^  \    |  |_)  | |  |     |  |__      |   (----`
+              \      /     /  /_\  \   |      /     |  |   /  /_\  \   |   _  <  |  |     |   __|      \   \    
+               \    /     /  _____  \  |  |\  \----.|  |  /  _____  \  |  |_)  | |  `----.|  |____ .----)   |   
+                \__/     /__/     \__\ | _| `._____||__| /__/     \__\ |______/  |_______||_______||_______/    ##Variables##
+*/
+            parsing = ReplaceStr(parsing,/^( *local +)(.*)/gm, (_, local, line) => local + parseVar(line, true));
+
+            //parse scoped functions.
+            parsing = ReplaceStr(parsing,/^( *)(private|public)(?: +constant)?\b +function *([\$\w]+)(.*?^ *endfunction)/gms,
+            (_, indent, scope, name, body) =>
+            {
+                body = indent + "local function " +name + body
+                if (scope == "public")
+                {
+                    return body + `\n${indent}_G[SCOPE_PREFIX..'${name}'] = ${name}`;
+                }
+                return body;
+            });
+            parsing = ReplaceStr(parsing,/^( *)private +keyword\b/gm, '$1local');
+
+            parsing = ReplaceStr(parsing,/\$([0-9a-fA-F]+[^\$])/g, "0x$1") //JASS "$hexcode" must be converted to "0xhexcode" to work in Lua.
+
+            parsing = ReplaceStr(parsing,/^( *)hook +(\w+) +(\w*(?:\.\w+)*)/gm, '$1vJass\.hook\("$2"\, $3\)');
+            
+            parsing = ReplaceStr(parsing,/^( *)library +(\w+) *(?:initializer *(\w*))?([^\r\n]*)(.*?)endlibrary/gms,
+            (_, indent, name, init, requirements, body) => 
+            {
+                let reqLines = "";
+                if (requirements !== undefined) {
+                    ReplaceStr(requirements,/(?:requires|needs|uses) +(.*)/m,
+                    (_, reqs) => {
+                        ReplaceStr(reqs, /(optional)? *(\w+)/g,
+                        (_, opt="", libName) => {
+                            if (opt !== "") {
+                                opt = ".optionally"
+                            }
+                            reqLines += "\n" + indent + indentation + "Require" + opt + " '" + libName + "'";
+                        })
+                    });
+                }
+                body = `${indent}OnInit("${name}", function()${reqLines}\n${indent}${indentation}LIBRARY_${name} = true\n${indent}${indentation}local SCOPE_PREFIX = "${name}_" ---@type string ${body}`;
+                if (init != undefined) { body += indent + indentation+"Require 'Init vJass Libraries'; "+init+"()\n"; }
+                return body + "\n"+indent+"end)";
+            });
+            parsing = ReplaceStr(parsing,/^( *)(private|public)? *scope +(\w+) *(?:initializer *(\w*))?(.*?)endscope/gms,
+            (_, indent, scope, name, init, body) =>
+            {
+                if (scope != undefined) { name = SCOPE_PREFIX+'.."'+name; } else { name = '"'+name; }
+                body = `${indent}OnInit(function()\n${indent}${indentation}local SCOPE_PREFIX = ${name}_" ---@type string ${body}`;
+                if (init != undefined) { body += indent + indentation+"Require 'Init vJass Scopes'; "+init+"()\n"; }
+                return body + "\n"+indent+"end)";
+            });
+/*
+             __        ______     ______   .______   
+            |  |      /  __  \   /  __  \  |   _  \  
+            |  |     |  |  |  | |  |  |  | |  |_)  | 
+            |  |     |  |  |  | |  |  |  | |   ___/  
+            |  `----.|  `--'  | |  `--'  | |  |      
+            |_______| \______/   \______/  | _|       ##Loop##
+*/
+            parsing = RepeatActionOnString(parsing, str=>
+            {
+                return ReplaceStr(str,/^( *)(loop\b((?!\bendloop\b|\bloop\b).)*\bendloop)/gms,
+                (_, indent, contents) =>
+                {
+                    contents = ReplaceStr(contents,/^loop\s+exitwhen *([^\r\n•]*)(.*end)loop/ms, (_,cond, cont) =>
+                    {
+                        let original = cond;
+                        cond = ReplaceStr(cond, /^ *([\w$]+) *([\<\>\=\~]{1,2}) *([\w$]+) *$/m, (_,w1,compare,w2) =>
+                        {
+                            switch (compare) //invert comparison to avoid need for "while not"
+                            {
+                                case "<":   compare = ">="; break;
+                                case ">":   compare = "<="; break;
+                                case "<=":  compare = ">";  break;
+                                case ">=":  compare = "<";  break;
+                                case "~=":  compare = "=="; break;
+                                default:    compare = "~=";
+                            }
+                            return w1+" "+compare+" "+w2
+                        });
+                        if (cond != original)
+                            return 'while '+cond+' do '+cont;
+
+                        return 'while not \('+cond+'\) do '+cont;
+                    });
+                    if (!noRepeatUntil) {
+                        contents = ReplaceStr(contents,/^loop(.*)\r?\n *exitwhen([^\n\r•]*)(\s*? *)endloop/ms, 'repeat$1$3until$2');
+                    }
+                    contents = ReplaceStr(contents,/^loop\b(.*end)loop/ms, 'while true do$1');
+                    contents = ReplaceStr(contents,/^( *)exitwhen\b([^\r\n•]*)/gm, '$1if$2 then break end');
+                    contents = ReplaceStr(contents,/^( *)if *true *then break end/gm, '$1break');
+                    return indent + contents;
+                });
+            });
+/*            _______  __        ______   .______        ___       __           _______.
+             /  _____||  |      /  __  \  |   _  \      /   \     |  |         /       |
+            |  |  __  |  |     |  |  |  | |  |_)  |    /  ^  \    |  |        |   (----`
+            |  | |_ | |  |     |  |  |  | |   _  <    /  /_\  \   |  |         \   \    
+            |  |__| | |  `----.|  `--'  | |  |_)  |  /  _____  \  |  `----..----)   |   
+             \______| |_______| \______/  |______/  /__/     \__\ |_______||_______/    ##Globals##
+*/
+            parsing = ReplaceStr(parsing,/^ *globals\b(.*?)\bendglobals\b/gms, (_, globals) =>
+            {
+                globals = ReplaceStr(globals,/^( *)private(?: +constant)*\b/gm,                         '$1local');
+                
+                globals = ReplaceStr(globals,/^( *)public +constant +([\$\w]+) +([\$\w]+)([^\n\r]*)/gm, '$1local $2 $3$4\n$1_G\[SCOPE_PREFIX..\"$3\"\] \= $3');
+                
+                globals = ReplaceStr(globals,/^( *)public +([\$\w]+) +([\$\w]+)\b([^\n\r]*)/gm,         '$1local $2 $3$4\n$1GlobalRemap\(SCOPE_PREFIX..\"$3\"\, function\(\) return $3 end, function\(val\) $3 = val end\)');
+                
+                globals = ReplaceStr(globals,/^( *(local +)*)(.*)/gm, (_, prefix, isLocal, remainder) => prefix + parseVar(remainder, isLocal));
+                return globals;
+            });
+/*
+            .___________. _______ ___   ___ .___________..___  ___.      ___        ______ .______        ______   
+            |           ||   ____|\  \ /  / |           ||   \/   |     /   \      /      ||   _  \      /  __  \  
+            `---|  |----`|  |__    \  V  /  `---|  |----`|  \  /  |    /  ^  \    |  ,----'|  |_)  |    |  |  |  | 
+                |  |     |   __|    >   <       |  |     |  |\/|  |   /  /_\  \   |  |     |      /     |  |  |  | 
+                |  |     |  |____  /  .  \      |  |     |  |  |  |  /  _____  \  |  `----.|  |\  \----.|  `--'  | 
+                |__|     |_______|/__/ \__\     |__|     |__|  |__| /__/     \__\  \______|| _| `._____| \______/  ##Textmacro##
+*/
+            parsing = ReplaceStr(parsing,/^( *)\-\-\! *textmacro +(\w+)(.*?)^ *\-\-\! *endtextmacro/gms, (_, indent, name, body) =>
+            {
+                let statements = ReplaceStr(body,/^ takes *(.*)/m, "$1");
+                if (statements != body) {
+                    let linebreak = statements.search(seekLineBreakR);
+
+                    body = statements;
+                    statements = statements.substring(0, linebreak);
+                    body = body.substring(linebreak);
+                    
+                    statements = ReplaceStr(statements,/\b\w+\b/g, arg => '\"'+arg+'\"');
+                    
+                    return indent + 'vJass.textmacro(\"'+name+'\", {'+statements+'}, [['+body+indent+']])';
+                }
+                return indent + `vJass.textmacro("${name}", nil, function(thistype)${body}${indent}end)`;
+            });
+            parsing = ReplaceStr(parsing,/^( *)\-\-\! *runtextmacro +(?:optional)* *(\w+) *\((.*?)\)/gm, '$1vJass.runtextmacro(\"$2\", $3)');
+/*               _______..___________..______       __    __    ______ .___________.     _______.              .___  ___.   ______    _______   __    __   __       _______      _______.
+                /       ||           ||   _  \     |  |  |  |  /      ||           |    /       |     ___      |   \/   |  /  __  \  |       \ |  |  |  | |  |     |   ____|    /       |
+               |   (----``---|  |----`|  |_)  |    |  |  |  | |  ,----'`---|  |----`   |   (----`    ( _ )     |  \  /  | |  |  |  | |  .--.  ||  |  |  | |  |     |  |__      |   (----`
+                \   \        |  |     |      /     |  |  |  | |  |         |  |         \   \        / _ \/\   |  |\/|  | |  |  |  | |  |  |  ||  |  |  | |  |     |   __|      \   \    
+            .----)   |       |  |     |  |\  \----.|  `--'  | |  `----.    |  |     .----)   |      | (_>  <   |  |  |  | |  `--'  | |  '--'  ||  `--'  | |  `----.|  |____ .----)   |   
+            |_______/        |__|     | _| `._____| \______/   \______|    |__|     |_______/        \___/\/   |__|  |__|  \______/  |_______/  \______/  |_______||_______||_______/    ##Struct## ##Module##
+*/            
+            parsing = ReplaceStr(parsing,/^( *)(private|public)* *(struct|module) *([$\w]+) *(.*?^ *end)(?:struct|module)/gms, (_, indent, scope, strOrMod, name, body) =>
+            {
+                let linebreak = body.search(seekLineBreakR);
+                let head = body.substring(0, linebreak);
+                body = body.substring(linebreak);
+
+                const isModule = (strOrMod == "module");
+
+                //parse all easily-detectable variable and method declarations
+
+                body = ReplaceStr(body, /\bstub\s+/g, "");
+
+                body = ReplaceStr(body,/^( *)(static|readonly|public|private|method) +(.*)/gm, function(_, indent, scope, line) {
+                    if (scope != "static") {
+                        line = ReplaceStr(line,/^( *)static *(?:constant +)*/m, '$1') //remove any case of "static" and "constant".
+                    }
+                    let isMethod;
+                    if (! isModule || scope != "private") {
+                        isMethod = scope == "method";
+                        scope = "thistype"; //only keep "private" for modules so the table knows to point to the module rather than to the implementing struct.
+                    }
+                    let operator;
+                    if (isMethod || line.substring(0,6) == "method") {
+                        line = ReplaceStr(line,/^(?:method)* *\b([\$\w]+)\b/m, function(_, name) {
+                            if (name != "operator") {
+                                return "function "+scope+":"+name;
+                            } else {
+                                operator = true;
+                                return "";
+                            }
+                        });
+                        if (operator) {
+                            line = ReplaceStr(line,/^ *(?:(\[ *\])|([\$\w]+)) *([=]*) *(.*)/m, function(_, bracket, word, setter, remainder) {
+                                if (bracket != undefined) {
+                                    if (setter != "") {
+                                        return "function thistype:_setindex("+ReplaceStr(remainder,/takes +[\$\w]+ +([\$\w]+) *, *[\$\w]+ *([\$\w]+\b|\$).*/, "$1, $2)");
+                                    } else {
+                                        return "function thistype:_getindex("+ReplaceStr(remainder,/takes +[\$\w]+ +([\$\w]+\b|\$).*/, '$1)');
+                                    }
+                                } else {
+                                    if (setter != "") {
+                                        return 'function thistype:_operatorset("'+word+'", '+ReplaceStr(remainder,/takes +[\$\w]+ +([\$\w]+\b|\$).*/, 'function(self, $1)');
+                                    } else {
+                                        return 'function thistype:_operatorget("'+word+'", function(self)';
+                                    }
+                                }
+                            });
+                        }
+                        line += "\n"+indent+indentation+"local _ENV = Struct.environment(self)"; //needed for Lua to know when to pick up invisible "self" reference.
+                    } else {
+                        line = scope+'.'+parseVar(line);
+                    }
+                    return indent + line;
+                });
+
+                body = ReplaceStr(body,/( *end)method/gm, "$1function");
+
+                if (isModule) {
+                    if (scope == undefined) {scope = ""}
+                    head = `vJass.module("${name}", "${scope}", SCOPE_PREFIX, function(private, thistype)` + head;
+                    body += ")";
+                } else {
+                    head = name+" = Struct() --" + head;
+                    head = ReplaceStr(head,/\(\) -- *extends +([$\w]+)/, (_, extended) => {
+                        if (extended == "array") { return "()"; }
+                        return `(${extended}) --`;
+                    });
+                    if (scope != undefined) {
+                        head = "local " + head;
+                        if (scope == "public") {
+                            head += "\n"+indent + '_G[SCOPE_PREFIX.."'+name+'"] = '+name;
+                        }
+                    }
+                }
+                body = ReplaceStr(body,/\bthis\b/g, 'self'); //implied 'this' in vJass doesn't work outside of structs, so we only need this replacer within a struct/module.
+                body = ReplaceStr(body,new RegExp("([^\\w\\d\\]\\)])\\."+capturevJassVar, "gm"), '$1self\.$2'); //dot-syntax doesn't work in Lua without something before the dot.
+                
+                body = ReplaceStr(body,new RegExp("^( *)implement +(?:optional *)*"+capturevJassVar, "gm"), '$1vJass.implement\(\"$2\", SCOPE_PREFIX, thistype\)');
+                let parseStructVar = (_,w1,w2,remainder,index) => parseIsolatedVar("thistype.",_,w1,w2,remainder,index);
+                body = RepeatActionOnString(body, str=>
+                {
+                    str = ReplaceStr(str,/([\w$]+) +array +([\w$]+)(.*)/g, parseStructVar);
+                    str = ReplaceStr(str,/([\w$]+) +([\w$]+)(.*)/g, parseStructVar);
+                    return str;
+                });
+                body = ReplaceStr(body,/^( *)(public|private) *static(?: *constant)* +/gm, function(_, indent, scope) {
+                    if (scope == "") { scope == "thistype"; }
+                    return indent+ scope+".";
+                });
+                if (! isModule) { body = "do\n"+indent+indentation+"local thistype = "+name + body; }
+                return indent + head + "\n" + indent + body;
+            });
+/*           _______  __    __  .__   __.   ______ .___________. __    ______   .__   __.      _______.
+            |   ____||  |  |  | |  \ |  |  /      ||           ||  |  /  __  \  |  \ |  |     /       |
+            |  |__   |  |  |  | |   \|  | |  ,----'`---|  |----`|  | |  |  |  | |   \|  |    |   (----`
+            |   __|  |  |  |  | |  . `  | |  |         |  |     |  | |  |  |  | |  . `  |     \   \    
+            |  |     |  `--'  | |  |\   | |  `----.    |  |     |  | |  `--'  | |  |\   | .----)   |   
+            |__|      \______/  |__| \__|  \______|    |__|     |__|  \______/  |__| \__| |_______/    ##Functions##
+*/
+            //Fix vJass dynamic function calling/referencing.
+            parsing = ReplaceStr(parsing,/([\w\$\.]+)[\:\.](name|(?:execute|evaluate))\b *(\(([^()]*)\))?/g, (ignoreMatch,name, reference, hasArgs,args="") =>
+            {
+                if (name == "vJass")        return ignoreMatch;
+                if (reference == "name")    return "vJass.name("+name+")";  //This adds the function to the _G table and returns the string indicating where it is.
+                if (hasArgs == undefined)   return ignoreMatch;             //ExecuteFunc will ignore strings that are not pointing to functions stored in the _G table.
+
+                return "vJass."+reference+"("+name+", "+args+")"; //myFunction.execute(1, 10) becomes vJass.execute(myFunction, 1, 10)
+            });
+
+            const getArgPairs = new RegExp(capturevJassVar+" +" +capturevJassVar,"g");
+            
+            function DoFloorInt(line)
+            {
+                //console.log("checking int:",line);
+                return ReplaceStr(line, /([^\/])\/([^\/])/g, (_, a, b) => a+"//"+b);
+            }
+
+            parsing = ReplaceStr(parsing, /^( *)(?:(private|public) +)?type +([\w\$]+) +extends(.*)/gm, (matchFailed,indent, scope, word, remainder)=>
+            {
+                if (remainder.search(/\bfunction\b/)>=0) {
+                    return "---@class "+word+"--"; //function interface. Just declare it for Emmy annotation.
+                }
+                let size;
+                remainder = ReplaceStr(remainder, /^[^\[]*\[ *([^,\] ]+)[^•\r\n]*(.*)/m, (_,num, ending) => {
+                    size = num;
+                    return ending; //extract any comments the user may have included on the same line.
+                });
+                if (size != undefined)
+                {
+                    if (remainder == undefined) remainder = "";
+
+                    if (scope != undefined)
+                    {
+                        if (scope == "public")
+                            remainder = "; _G[SCOPE_PREFIX.."+ word +"] = " + word;
+                        
+                        indent += "local ";
+                    }
+                    return indent+word + " = vJass.dynamicArray("+size+")"+remainder;
+                }
+                return "--PARSER ERROR WITH: "+matchFailed
+            });
+
+            parsing = RepeatActionOnString(parsing, str=>
+            {
+                return ReplaceStr(str,/^( *)((?:[\w\$:\[\]\=]+ +)+?|[^\r\n]*?\bfunction )\btakes +([\$\w, ]+ +)*?\breturns +([\$\w]+)(.*?\bend)function\b/gms, 
+                (_, indent, func, params, rtype, contents) => 
+                {
+                    let paramEmmy = "";
+                    let returnEmmy = "";
+                    let argsResult = "";
+                    func = func.slice(0, -1); //remove the last space
+                    if (rtype != "nothing")
+                    {
+                        returnEmmy = indent + "---\@return " + rtype + "\n";
+                        if (rtype == "integer")
+                        {
+                            contents = ReplaceStr(contents, /return.+\/.+/g, returnLine => DoFloorInt(returnLine));
+                        }
+                    }
+
+                    contents = ReplaceStr(contents,/function *([\$\w]+(?:\.[\w\$]+)? *[\)\,])/g, "$1");
+
+                    contents = ReplaceStr(contents, /([$\w]+) *\=[^\n\r•]*/g, (setterLine, varName) =>
+                    {
+                        if (isVarInt(varName))
+                        {
+                            setterLine = DoFloorInt(setterLine);
+                        }
+                        else if (varName == "self")
+                        {
+                            setterLine += "; _ENV = Struct.environment(self)"; //needed for when the reference is reassigned after the fact.
+                        }
+                        return setterLine;
+                    });
+                    if (! params.match(/\bnothing\b/)) {
+                        //console.log("params:", params);
+                        argsResult = ReplaceStr(params,getArgPairs, (_, type, name) => {
+                            paramEmmy += indent + "---\@param " + name + " " + type + "\n";
+                            return name;
+                        }).slice(0, -1); //remove the last space
+                    }
+                    return paramEmmy + returnEmmy + indent + func + "(" + argsResult + ")"+contents;
+                });
+            });
+            parsing = ReplaceStr(parsing,/endfunction/g, "end");
+            parsing = deleteEmmies(parsing);
+
+            parsing = unpackComment(parsing);
+            parsing = unpackComment(parsing); //do it again as block comments might have had packed comments
+            parsing = unpackString(parsing);
+            parsing = unpackRawcode(parsing);
+            
+            parsing = deleteLineBreaks(parsing);
+
+            recent = vJassSource;
+            parsing += "\n--Conversion by vJass2Lua v0.A.3.0 beta";
+            vJassField.value = parsing
+            if (document.getElementById("autoCopy").checked)
+            {
+                navigator.clipboard.writeText(parsing);
+            }
+        }
+        vJassField.addEventListener('paste', function(e) { //solution from https://stackoverflow.com/a/6804718/18919165
+            if (document.getElementById("autoConvert").checked)
+            {
+                let clipboardData, pastedData;
+                e.stopPropagation();
+                e.preventDefault();
+
+                clipboardData = e.clipboardData || window.clipboardData;
+
+                vJassField.value = clipboardData.getData('Text');
+                parseScript();
+            }
+        });
+        document.getElementById('convert2lua').onclick = parseScript;
+    </script>
+</html>
