@@ -1,27 +1,31 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
     <head>
+        <meta charset="utf-8" name="viewport" content="width=device-width, initial-scale=1" />
+
         <title>Bribe's vJass2Lua version 0.A.3.0 beta</title>
     </head>
     <body>
         <input type="button" id="convert2lua" value="Convert to Lua"/>
-        <input type="checkbox" id="autoConvert" checked>Convert on paste
+        <label><input type="checkbox" id="autoConvert" checked>Convert on paste</label>
         <input type="button" id="copyscript" value="Copy to Clipboard"/>
-        <input type="checkbox" id="autoCopy" checked>Copy on convert
+        <label><input type="checkbox" id="autoCopy" checked>Copy on convert</label>
         <input type="button" id="revert2vjass" value="Revert to vJass"/>
         <br/>
         <textarea autofocus rows="40" cols="120" id="scriptblock" placeholder="Enter vJass script" wrap="off"></textarea>
         <br />
         <div style="font-family: roboto,verdana,arial;font-size: 13px;">
         Configurables:
-        <input type="number" id="spacing" name="spacing" min="1" max="16" value="4" style="width: 30px;">Spacing
-        <input type="checkbox" id="addZinc">Add //! zinc wrapper
-        <input type="checkbox" id="commentdebug" checked>Comment-out debug lines
-        <input type="checkbox" id="deletecomments">Delete comments
-        <input type="checkbox" id="deleteemmy">Delete Emmy Annotation
-        <input type="checkbox" id="deletelinebreaks">Delete extra linebreaks
+        <label><input type="number" id="spacing" name="spacing" min="1" max="16" value="4" style="width: 30px;">Spacing</label>
+        <label><input type="checkbox" id="addZinc">Add //! zinc wrapper</label>
+        <label><input type="checkbox" id="commentdebug" checked>Comment-out debug lines</label>
+        <label><input type="checkbox" id="deletecomments">Delete comments</label>
+        <label><input type="checkbox" id="deleteemmy">Delete Emmy Annotation</label>
+        <label><input type="checkbox" id="deletelinebreaks">Delete extra linebreaks</label>
         <br />
-        <input type="checkbox" id="avoidrepeatuntil">Don't use repeat...until loops
+        <label><input type="checkbox" id="avoidrepeatuntil">Don't use repeat...until loops</label>
+        <label><input type="checkbox" id="deletenatives" checked>Comment-out native declarations</label>
+        <label><input type="checkbox" id="usealias" checked>Use @type one-liner instead of multi-line @param</label>
         <br />
         <br />
         Required Lua for vJass support:
@@ -35,8 +39,8 @@
         <br />
         Alternatively to the above, if this is only a JASS script, you can add this snippet to the top trigger in your map to help in case any string concatenation was missed: 
         </div>
-        <br /><textarea cols = "70" id="stringmt" rows = "1">getmetatable("").__add = function(obj, obj2) return obj .. obj2 end</textarea>
-        <input type="button" id="copystring" value="Copy"/>
+        <br /><label><textarea cols = "70" id="stringmt" rows = "1">getmetatable("").__add = function(obj, obj2) return obj .. obj2 end</textarea>
+        <input type="button" id="copystring" value="Copy"/></label>
     </body>
     <script>
         //Credit for generated large, fancy text goes to https://www.messletters.com/en/big-text/
@@ -44,6 +48,14 @@
         var recent = "";
         const vJassField = document.getElementById("scriptblock");
         var converted = false; //prevent double-click of Convert2Lua from corrupting the code
+
+        const RC2NF = (type) => {
+            if (type === "real")
+                return "number";
+            else if (type === "code")
+                return "function";
+            return type;
+        }
 
         function deleteEmmies(str) {
             if (document.getElementById("deleteemmy").checked) {
@@ -151,6 +163,8 @@
         const seekLineBreak = "\\r?\\n";
         const seekLineBreakR= new RegExp(seekLineBreak);
 
+        const getArgPairs = new RegExp(capturevJassVar+" +" +capturevJassVar,"g");
+
         function ReplaceStr(str, regexPattern, replacement) {
             //let original = str;
 
@@ -176,7 +190,7 @@
             {
                 //let tlen = " ".repeat(type.length) + "      "; //##formatting
                 let rawtype = type;
-                type = " ---@type "+type;
+                type = " ---@type "+RC2NF(type);
                 let result = ReplaceStr(remainder,replaceArray2,
                 (_, width, height) =>
                     `${name}=vJass.array2D\(${width}, ${height}\)${type}\[\]\[\] `
@@ -189,7 +203,7 @@
                         switch (rawtype) {
                             case "integer":
                                             addToIntStack(name);
-                            case "real":
+                            case "number":
                                             arrayType = "0";
                             break;
                             case "boolean": arrayType = "false";
@@ -227,7 +241,7 @@
                     tlen = "";
                 }
 
-                tail = " ---@type " + type + " " + tail;
+                tail = " ---@type " + RC2NF(type) + " " + tail;
                 let isSet = remainder.search(/^ *\=/m);
                 if (isSet < 0) {
 
@@ -527,6 +541,10 @@
             
             let noRepeatUntil = document.getElementById("avoidrepeatuntil").checked; //temporary workaround
             
+            let commentOutNatives = document.getElementById("deletenatives").checked;
+
+            let useAlias = document.getElementById("usealias").checked;
+
             let parsing = vJassSource;
             
             parsing = RepeatActionOnString(parsing, str=> ReplaceStr(str,/^([^\r\n\t]*)\t/gm, (_, leadingChars) =>
@@ -539,7 +557,10 @@
             
             parsing = ReplaceStr(parsing,/^ *\/\/\! *novjass\b.*?^ *\/\/\! *\bendnovjass\b/gms, str => insertBlockComment('\n'+str)); //novjass blocks
             
-            parsing = ReplaceStr(parsing,/(?<!^.*\/\/.*)("(?:[^"\\]|\\"|\\\\)*")/gm, (_, str) => insertString(str)); //Store strings into an array to protect them from being parsed.
+            parsing = ReplaceStr(parsing,/" *\+/g, '\"..'); //..
+            parsing = ReplaceStr(parsing,/\+ *"/g, '..\"'); //fix predictable string cocatenation
+
+            parsing = ReplaceStr(parsing,/("(?:[^"\\]|\\"|\\[\\\w])*?")/gm, (_, str) => insertString(str)); //Store strings into an array to protect them from being parsed.
 
             parsing = ReplaceStr(parsing,/'(?:[^'\\]|\\'|\\\\){4}'/g, str => insertRawcode('FourCC('+str+')')); //Wrap 'hfoo' or 'Abil' in FourCC.
 
@@ -551,7 +572,35 @@
             parsing = ReplaceStr(parsing,/([;}] *)\/\*((?:(?!\*\/).)*?)\*\//gms, (_, a, b) => a+insertBlockComment(b)); //convert safe block comments that were preceded by a ; or }
             
             parsing = ReplaceStr(parsing,/\/\*(?:(?!\*\/).)*?\*\//gms, ''); //delete all remaining blockquotes as "unsafe" to parse.
-            parsing = ReplaceStr(parsing,/^ *native\b.*/gm, str => insertComment(str)); //comment-out natives
+            if (commentOutNatives)
+                parsing = ReplaceStr(parsing,/^ *(?:constant)? *native\b.*/gm, str => insertComment(str)); //comment-out natives
+            else
+                parsing = ReplaceStr(parsing,/^( *)(?:constant)? *native\b([^•\r\n]+)/gm, (_, indent, remainder) => {
+                    if (useAlias) {
+                        let name = "";
+                        let args = "";
+                        let returns = "";
+                        let newRemainder = "";
+                        let gap = "";
+                        remainder = ReplaceStr(remainder, /([\$\w]+)( +)takes +([\$\w, ]+ +)*?\breturns +([\$\w]+)(.*?)/, (_, rawName, rawGap, rawArgs, rawReturns, rawRemainder) => {
+                            name = rawName;
+                            if (rawReturns !== "nothing")
+                                returns = ": " + RC2NF(rawReturns);
+                            if (rawArgs.search(/\bnothing\b/) < 0) {
+                                ReplaceStr(rawArgs, getArgPairs, (_, type, name) => {
+                                    type = RC2NF(type);
+                                    args += name + ": " + type + ", ";
+                                    return "";
+                                });
+                                args = args.slice(0, -2); //remove the last comma.
+                            }
+                            gap = rawGap;
+                            newRemainder = rawRemainder;
+                        });
+                        return indent + name + "=null"+ gap +"---@type fun(" + args + ")" + returns + " (native)" + newRemainder;
+                    } else 
+                        return indent + "function" + remainder + " endfunction --(native)";
+                }); //really only useful for parsing through something like common.j
 
             parsing = ReplaceStr(parsing,/\b(?:do|in|end|nil|repeat|until)\b/g, '$&_'); //fix Lua keywords that aren't found in vJass nor Zinc.
 
@@ -785,7 +834,7 @@
                             if (isValidFunc == "function") {
                                 endpadding1 += "endfunction";
                                 if (functionName == "onInit")
-                                    endpadding1 += "; OnInit(function() Require 'vJass2Lua'; onInit() end)";
+                                    endpadding1 += "; OnInit(function() Require.strict 'vJass2Lua'; onInit() end)";
                             } else {
                                 endpadding1 += "endmethod";
                             }
@@ -964,8 +1013,6 @@
 
             parsing = ReplaceStr(parsing,/\.exists\b/g, '');                           //This vJass feature is the same as simply reading the variable in Lua.
             parsing = ReplaceStr(parsing,/'\\?(.)'/g, (_,char) => char.charCodeAt(0)); //convert 'a' or ';' into their integer equivalents.
-            parsing = ReplaceStr(parsing,/\" *\+/g, '\"..'); //..
-            parsing = ReplaceStr(parsing,/\+ *\"/g, '..\"'); //fix predictable string cocatenation
 
             parsing = ReplaceStr(parsing,/(.)\.([\$\w]+) *\(/gm, (_,firstChar,methodCaller) =>
             {
@@ -1116,7 +1163,11 @@
                 }
                 return indent + `vJass.textmacro("${name}", nil, function(thistype)${body}${indent}end)`;
             });
-            parsing = ReplaceStr(parsing,/^( *)\-\-\! *runtextmacro +(?:optional)* *(\w+) *\((.*?)\)/gm, '$1vJass.runtextmacro(\"$2\", $3)');
+            //'$1vJass.runtextmacro(\"$2\", $3)'
+            parsing = ReplaceStr(parsing,/^( *)\-\-\! *runtextmacro +(?:optional)* *(\w+) *\((.*?)\)/gm, (_, indent, name, args="") => {
+                if (args !== "") args = ", " + args;
+                return indent + 'vJass.runtextmacro("' + name + '"' + args + ")";
+            });
 /*               _______..___________..______       __    __    ______ .___________.     _______.              .___  ___.   ______    _______   __    __   __       _______      _______.
                 /       ||           ||   _  \     |  |  |  |  /      ||           |    /       |     ___      |   \/   |  /  __  \  |       \ |  |  |  | |  |     |   ____|    /       |
                |   (----``---|  |----`|  |_)  |    |  |  |  | |  ,----'`---|  |----`   |   (----`    ( _ )     |  \  /  | |  |  |  | |  .--.  ||  |  |  | |  |     |  |__      |   (----`
@@ -1165,9 +1216,9 @@
                                     }
                                 } else {
                                     if (setter != "") {
-                                        return 'function thistype:_operatorset("'+word+'", '+ReplaceStr(remainder,/takes +[\$\w]+ +([\$\w]+\b|\$).*/, 'function(self, $1)');
+                                        return 'thistype:_operatorset("'+word+'", '+ReplaceStr(remainder,/takes +[\$\w]+ +([\$\w]+\b|\$).*/, 'function(self, $1)');
                                     } else {
-                                        return 'function thistype:_operatorget("'+word+'", function(self)';
+                                        return 'thistype:_operatorget("'+word+'", function(self)';
                                     }
                                 }
                             });
@@ -1179,14 +1230,17 @@
                     return indent + line;
                 });
 
-                body = ReplaceStr(body,/( *end)method/gm, "$1function");
+                //body = ReplaceStr(body,/thistype:_(?:[gs]etindex|operator[gs]et)\(.*?endmethod/gs, match => match + ")");
+                body = ReplaceStr(body,/thistype:_operator[gs]et\(.*?endmethod/gs, match => match + ")"); //close off method operators with a parenthesis.
+                body = ReplaceStr(body,/( *end)method/gm, "$1function"); //preserves indentation
 
                 if (isModule) {
                     if (scope == undefined) {scope = ""}
                     head = `vJass.module("${name}", "${scope}", SCOPE_PREFIX, function(private, thistype)` + head;
                     body += ")";
                 } else {
-                    head = name+" = Struct() --" + head;
+                    if (head !== "") head = " --" + head;
+                    head = name+" = Struct() ---@class " + name + head;
                     head = ReplaceStr(head,/\(\) -- *extends +([$\w]+)/, (_, extended) => {
                         if (extended == "array") { return "()"; }
                         return `(${extended}) --`;
@@ -1232,8 +1286,6 @@
 
                 return "vJass."+reference+"("+name+", "+args+")"; //myFunction.execute(1, 10) becomes vJass.execute(myFunction, 1, 10)
             });
-
-            const getArgPairs = new RegExp(capturevJassVar+" +" +capturevJassVar,"g");
             
             function DoFloorInt(line)
             {
@@ -1241,10 +1293,10 @@
                 return ReplaceStr(line, /([^\/])\/([^\/])/g, (_, a, b) => a+"//"+b);
             }
 
-            parsing = ReplaceStr(parsing, /^( *)(?:(private|public) +)?type +([\w\$]+) +extends(.*)/gm, (matchFailed,indent, scope, word, remainder)=>
+            parsing = ReplaceStr(parsing, /^( *)(?:(private|public) +)?type +([\w\$]+)( +)extends(.*)/gm, (matchFailed,indent, scope, word, gap, remainder="")=>
             {
                 if (remainder.search(/\bfunction\b/)>=0) {
-                    return "---@class "+word+"--"; //function interface. Just declare it for Emmy annotation.
+                    return "---@class "+word+":function --"; //function interface. Just declare it for Emmy annotation.
                 }
                 let size;
                 remainder = ReplaceStr(remainder, /^[^\[]*\[ *([^,\] ]+)[^•\r\n]*(.*)/m, (_,num, ending) => {
@@ -1253,8 +1305,6 @@
                 });
                 if (size != undefined)
                 {
-                    if (remainder == undefined) remainder = "";
-
                     if (scope != undefined)
                     {
                         if (scope == "public")
@@ -1262,9 +1312,9 @@
                         
                         indent += "local ";
                     }
-                    return indent+word + " = vJass.dynamicArray("+size+")"+remainder;
+                    return indent+word + gap + " = vJass.dynamicArray("+size+")"+remainder;
                 }
-                return "--PARSER ERROR WITH: "+matchFailed
+                return indent + "---@class " + word + ": " + gap + remainder;
             });
 
             parsing = RepeatActionOnString(parsing, str=>
@@ -1278,16 +1328,21 @@
                     func = func.slice(0, -1); //remove the last space
                     if (rtype != "nothing")
                     {
-                        returnEmmy = indent + "---\@return " + rtype + "\n";
+                        rtype = RC2NF(rtype);
+                        if (useAlias) {
+                            returnEmmy = ":" + rtype
+                        } else {
+                            returnEmmy = indent + "---\@return " + rtype + "\n";
+                        }
                         if (rtype == "integer")
                         {
                             contents = ReplaceStr(contents, /return.+\/.+/g, returnLine => DoFloorInt(returnLine));
                         }
                     }
 
-                    contents = ReplaceStr(contents,/function *([\$\w]+(?:\.[\w\$]+)? *[\)\,])/g, "$1");
+                    contents = ReplaceStr(contents,/function *([\$\w]+(?:\.[\w\$]+)? *[\)\,])/g, "$1"); //remove JASS code type reference (function foo => foo).
 
-                    contents = ReplaceStr(contents, /([$\w]+) *\=[^\n\r•]*/g, (setterLine, varName) =>
+                    contents = ReplaceStr(contents, /([$\w]+) *\=[^=\n\r•][^\n\r•]*/g, (setterLine, varName) =>
                     {
                         if (isVarInt(varName))
                         {
@@ -1299,14 +1354,37 @@
                         }
                         return setterLine;
                     });
-                    if (! params.match(/\bnothing\b/)) {
+                    let doEmmyParse = (type, name) => {
+                        if (useAlias) {
+                            paramEmmy += name + ": " + type + ", ";
+                        } else {
+                            paramEmmy += indent + "---\@param " + name + " " + type + "\n";
+                        }
+                    }
+                    if (func.includes(":")) doEmmyParse("thistype", "self");
+                    if (params.search(/\bnothing\b/) < 0) {
                         //console.log("params:", params);
                         argsResult = ReplaceStr(params,getArgPairs, (_, type, name) => {
-                            paramEmmy += indent + "---\@param " + name + " " + type + "\n";
+                            type = RC2NF(type);
+                            doEmmyParse(type, name);
                             return name;
                         }).slice(0, -1); //remove the last space
                     }
-                    return paramEmmy + returnEmmy + indent + func + "(" + argsResult + ")"+contents;
+                    let emmyResult = ""
+                    let allowEmmyParse = true;
+                    if (useAlias) {
+                        if (paramEmmy !== "") {
+                            paramEmmy = paramEmmy.slice(0, -2); //remove trailing comma
+                        } else if (returnEmmy === "") {
+                            allowEmmyParse = false; //don't show ---@type fun()
+                        }
+                        if (allowEmmyParse) {
+                            emmyResult = indent + "---\@type fun(" + paramEmmy + ")" + returnEmmy + "\n";
+                        }
+                    } else {
+                        emmyResult = paramEmmy + returnEmmy;
+                    }
+                    return emmyResult + indent + func + "(" + argsResult + ")" + contents;
                 });
             });
             parsing = ReplaceStr(parsing,/endfunction/g, "end");
